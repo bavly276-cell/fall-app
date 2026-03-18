@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "538999544234",
+    "project_id": "fall-detection-61bca",
+    "storage_bucket": "fall-detection-61bca.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:538999544234:android:4f7aab266c60d10f62b3d3",
+        "android_client_info": {
+          "package_name": "com.bavly"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyA1WNWlIMLpwmb5T7b-XEjIBBq7kMM1vCw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

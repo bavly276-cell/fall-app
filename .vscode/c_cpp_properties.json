@@ -1,0 +1,20 @@
+{
+    "configurations": [
+        {
+            "name": "Arduino Nano 33 BLE",
+            "includePath": [
+                "${workspaceFolder}/arduino/**"
+            ],
+            "defines": [
+                "ARDUINO=10819",
+                "ARDUINO_ARCH_NRF52840",
+                "ARDUINO_ARDUINO_NANO33BLE"
+            ],
+            "compilerPath": "",
+            "cStandard": "c11",
+            "cppStandard": "c++17",
+            "intelliSenseMode": "gcc-arm"
+        }
+    ],
+    "version": 4
+}
