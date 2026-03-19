@@ -1,4 +1,6 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
 import '../services/app_state.dart';
 import '../services/ble_service.dart';
@@ -17,6 +19,7 @@ class ProfileScreen extends StatefulWidget {
 class _ProfileScreenState extends State<ProfileScreen> {
   bool _autoReconnect = BleService.autoReconnectEnabled;
   bool _backgroundRunning = false;
+  final ImagePicker _picker = ImagePicker();
 
   @override
   void initState() {
@@ -29,6 +32,14 @@ class _ProfileScreenState extends State<ProfileScreen> {
     if (mounted) setState(() => _backgroundRunning = running);
   }
 
+  Future<void> _changePatientPhoto(AppState state) async {
+    final picked = await _picker.pickImage(source: ImageSource.gallery);
+    if (picked == null) return;
+    final bytes = await picked.readAsBytes();
+    final base64 = base64Encode(bytes);
+    await state.setPatientPhotoBase64(base64);
+  }
+
   @override
   Widget build(BuildContext context) {
     final state = Provider.of<AppState>(context);
@@ -39,11 +50,40 @@ class _ProfileScreenState extends State<ProfileScreen> {
         padding: const EdgeInsets.all(16),
         children: [
           // Avatar
-          const Center(
-            child: CircleAvatar(
-              radius: 50,
-              backgroundColor: Color(0xFF1565C0),
-              child: Icon(Icons.person, size: 60, color: Colors.white),
+          Center(
+            child: GestureDetector(
+              onTap: () => _changePatientPhoto(state),
+              child: Stack(
+                alignment: Alignment.bottomRight,
+                children: [
+                  CircleAvatar(
+                    radius: 50,
+                    backgroundColor: const Color(0xFF1565C0),
+                    backgroundImage: state.patientPhotoBase64 != null
+                        ? MemoryImage(base64Decode(state.patientPhotoBase64!))
+                        : null,
+                    child: state.patientPhotoBase64 == null
+                        ? const Icon(
+                            Icons.person,
+                            size: 60,
+                            color: Colors.white,
+                          )
+                        : null,
+                  ),
+                  Container(
+                    decoration: BoxDecoration(
+                      color: Theme.of(context).colorScheme.primary,
+                      shape: BoxShape.circle,
+                    ),
+                    padding: const EdgeInsets.all(6),
+                    child: const Icon(
+                      Icons.edit,
+                      size: 18,
+                      color: Colors.white,
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
           const SizedBox(height: 24),
@@ -57,7 +97,20 @@ class _ProfileScreenState extends State<ProfileScreen> {
               state.patientName,
               (val) => state.patientName = val,
             ),
-            _infoRow(Icons.devices, 'Device ID', FirestoreService.deviceId),
+            _editableRow(
+              context,
+              Icons.email,
+              'Email',
+              state.patientEmail.isNotEmpty ? state.patientEmail : 'Not set',
+              (val) => state.patientEmail = val,
+            ),
+            _editableRow(
+              context,
+              Icons.phone_android,
+              'Phone',
+              state.patientPhone.isNotEmpty ? state.patientPhone : 'Not set',
+              (val) => state.patientPhone = val,
+            ),
           ]),
           const SizedBox(height: 12),
 
@@ -77,7 +130,15 @@ class _ProfileScreenState extends State<ProfileScreen> {
               state.caregiverPhone,
               (val) => state.caregiverPhone = val,
             ),
-            _infoRow(Icons.email, 'Email', 'romanybavly@gmail.com'),
+            _editableRow(
+              context,
+              Icons.email,
+              'Email',
+              state.caregiverEmail.isNotEmpty
+                  ? state.caregiverEmail
+                  : 'Not set',
+              (val) => state.caregiverEmail = val,
+            ),
           ]),
           const SizedBox(height: 12),
 

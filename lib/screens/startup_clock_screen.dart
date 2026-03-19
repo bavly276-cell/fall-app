@@ -1,6 +1,9 @@
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import '../services/app_state.dart';
 import 'home_screen.dart';
+import 'patient_onboarding_screen.dart';
 
 class StartupClockScreen extends StatefulWidget {
   const StartupClockScreen({super.key});
@@ -20,21 +23,26 @@ class _StartupClockScreenState extends State<StartupClockScreen>
 
     _logoController = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 1800),
+      duration: const Duration(milliseconds: 1400),
     )..repeat();
 
     _introController = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 900),
+      duration: const Duration(milliseconds: 600),
     )..forward();
 
-    Future<void>.delayed(const Duration(milliseconds: 1800), () {
+    Future<void>.delayed(const Duration(milliseconds: 1200), () {
       if (!mounted) return;
+      final appState = Provider.of<AppState>(context, listen: false);
+      final firstRun =
+          !appState.onboardingComplete ||
+          appState.patientName == 'Patient Name' ||
+          appState.patientPhone.isEmpty;
       Navigator.of(context).pushReplacement(
         PageRouteBuilder(
           pageBuilder: (context, animation, secondaryAnimation) =>
-              const HomeScreen(),
-          transitionDuration: const Duration(milliseconds: 600),
+              firstRun ? const PatientOnboardingScreen() : const HomeScreen(),
+          transitionDuration: const Duration(milliseconds: 350),
           transitionsBuilder: (context, animation, secondaryAnimation, child) {
             final fade = CurvedAnimation(
               parent: animation,

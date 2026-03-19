@@ -30,13 +30,25 @@ class AppState extends ChangeNotifier {
   bool get isMonitoring => _monitoring;
 
   // ── Caregiver / Patient ──
-  String _caregiverName = 'Dr. Kyrollos Marcus';
-  String _patientName = 'Patient Name';
-  String _caregiverPhone = '+20 128 346 9430';
+  String _caregiverName = '';
+  String _patientName = '';
+  String _caregiverPhone = '';
+  String _patientPhone = '';
+  String _caregiverEmail = '';
+  String _patientEmail = '';
+
+  String? _patientPhotoBase64;
+
+  bool _onboardingComplete = false;
 
   String get caregiverName => _caregiverName;
   String get patientName => _patientName;
   String get caregiverPhone => _caregiverPhone;
+  String get patientPhone => _patientPhone;
+  String get caregiverEmail => _caregiverEmail;
+  String get patientEmail => _patientEmail;
+  String? get patientPhotoBase64 => _patientPhotoBase64;
+  bool get onboardingComplete => _onboardingComplete;
 
   set caregiverName(String v) {
     _caregiverName = v;
@@ -56,6 +68,46 @@ class AppState extends ChangeNotifier {
     _caregiverPhone = v;
     _saveStringPref(AppConstants.prefCaregiverPhone, v);
     _syncProfileToCloud();
+    notifyListeners();
+  }
+
+  set patientPhone(String v) {
+    _patientPhone = v;
+    _saveStringPref(AppConstants.prefPatientPhone, v);
+    _syncProfileToCloud();
+    notifyListeners();
+  }
+
+  set caregiverEmail(String v) {
+    _caregiverEmail = v;
+    _saveStringPref(AppConstants.prefCaregiverEmail, v);
+    _syncProfileToCloud();
+    notifyListeners();
+  }
+
+  set patientEmail(String v) {
+    _patientEmail = v;
+    _saveStringPref(AppConstants.prefPatientEmail, v);
+    _syncProfileToCloud();
+    notifyListeners();
+  }
+
+  void markOnboardingComplete() {
+    _onboardingComplete = true;
+    _saveBoolPref(AppConstants.prefOnboardingComplete, true);
+    notifyListeners();
+  }
+
+  Future<void> setPatientPhotoBase64(String? base64) async {
+    _patientPhotoBase64 = base64;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (base64 == null || base64.isEmpty) {
+        await prefs.remove(AppConstants.prefProfilePhoto);
+      } else {
+        await prefs.setString(AppConstants.prefProfilePhoto, base64);
+      }
+    } catch (_) {}
     notifyListeners();
   }
 
@@ -102,10 +154,22 @@ class AppState extends ChangeNotifier {
       isDarkMode = prefs.getBool(AppConstants.prefDarkMode) ?? isDarkMode;
       _patientName =
           prefs.getString(AppConstants.prefPatientName) ?? _patientName;
+      _patientPhone =
+          prefs.getString(AppConstants.prefPatientPhone) ?? _patientPhone;
+      _patientEmail =
+          prefs.getString(AppConstants.prefPatientEmail) ?? _patientEmail;
       _caregiverName =
           prefs.getString(AppConstants.prefCaregiverName) ?? _caregiverName;
       _caregiverPhone =
           prefs.getString(AppConstants.prefCaregiverPhone) ?? _caregiverPhone;
+      _caregiverEmail =
+          prefs.getString(AppConstants.prefCaregiverEmail) ?? _caregiverEmail;
+      final storedPhoto = prefs.getString(AppConstants.prefProfilePhoto);
+      _patientPhotoBase64 = (storedPhoto != null && storedPhoto.isNotEmpty)
+          ? storedPhoto
+          : null;
+      _onboardingComplete =
+          prefs.getBool(AppConstants.prefOnboardingComplete) ?? false;
       smsAlertEnabled = prefs.getBool('sms_alert_enabled') ?? smsAlertEnabled;
       autoSmsOnConfirm =
           prefs.getBool('auto_sms_on_confirm') ?? autoSmsOnConfirm;
@@ -147,6 +211,9 @@ class AppState extends ChangeNotifier {
       _patientName = profile['patientName'] as String? ?? _patientName;
       _caregiverName = profile['caregiverName'] as String? ?? _caregiverName;
       _caregiverPhone = profile['caregiverPhone'] as String? ?? _caregiverPhone;
+      _patientPhone = profile['patientPhone'] as String? ?? _patientPhone;
+      _patientEmail = profile['patientEmail'] as String? ?? _patientEmail;
+      _caregiverEmail = profile['caregiverEmail'] as String? ?? _caregiverEmail;
       smsAlertEnabled = profile['smsAlertEnabled'] as bool? ?? smsAlertEnabled;
       autoSmsOnConfirm =
           profile['autoSmsOnConfirm'] as bool? ?? autoSmsOnConfirm;
@@ -578,8 +645,11 @@ class AppState extends ChangeNotifier {
     if (!_firebaseReady) return;
     FirestoreService.saveProfile(
       patientName: patientName,
+      patientPhone: patientPhone,
+      patientEmail: patientEmail.isNotEmpty ? patientEmail : null,
       caregiverName: caregiverName,
       caregiverPhone: caregiverPhone,
+      caregiverEmail: caregiverEmail.isNotEmpty ? caregiverEmail : null,
       smsAlertEnabled: smsAlertEnabled,
       autoSmsOnConfirm: autoSmsOnConfirm,
     );

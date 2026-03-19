@@ -125,16 +125,22 @@ class FirestoreService {
   /// Save user profile to Firestore.
   static Future<void> saveProfile({
     required String patientName,
+    String? patientPhone,
+    String? patientEmail,
     required String caregiverName,
     required String caregiverPhone,
+    String? caregiverEmail,
     bool smsAlertEnabled = true,
     bool autoSmsOnConfirm = true,
   }) async {
     try {
       await _userDoc.set({
         'patientName': patientName,
+        if (patientPhone != null) 'patientPhone': patientPhone,
+        if (patientEmail != null) 'patientEmail': patientEmail,
         'caregiverName': caregiverName,
         'caregiverPhone': caregiverPhone,
+        if (caregiverEmail != null) 'caregiverEmail': caregiverEmail,
         'smsAlertEnabled': smsAlertEnabled,
         'autoSmsOnConfirm': autoSmsOnConfirm,
         'updatedAt': FieldValue.serverTimestamp(),

@@ -44,8 +44,11 @@ class AppConstants {
   // SharedPreferences Keys
   static const String prefDarkMode = 'dark_mode';
   static const String prefPatientName = 'patient_name';
+  static const String prefPatientPhone = 'patient_phone';
+  static const String prefPatientEmail = 'patient_email';
   static const String prefCaregiverName = 'caregiver_name';
   static const String prefCaregiverPhone = 'caregiver_phone';
+  static const String prefCaregiverEmail = 'caregiver_email';
   static const String prefProfilePhoto = 'profile_photo_base64';
   static const String prefOnboardingComplete = 'onboarding_complete';
   static const String prefFallHistory = 'fall_history';
