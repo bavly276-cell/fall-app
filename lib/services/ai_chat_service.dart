@@ -1,34 +1,20 @@
-import 'package:google_generative_ai/google_generative_ai.dart';
+import 'dart:convert';
+
 import 'package:flutter/foundation.dart';
+import 'package:http/http.dart' as http;
+
 import 'app_state.dart';
 
 class AiChatService {
-  static const String _apiKey = String.fromEnvironment(
-    'GEMINI_API_KEY',
-    defaultValue: '',
+  // Backend proxy URL — set this to your deployed backend
+  // For local development: http://localhost:3000
+  // For production: https://your-backend-url.com
+  static const String _backendUrl = String.fromEnvironment(
+    'BACKEND_URL',
+    defaultValue: 'http://localhost:3000',
   );
 
-  bool get isConfigured => _apiKey.isNotEmpty;
-
-  GenerativeModel? _model;
-  ChatSession? _chat;
-
-  AiChatService() {
-    if (_apiKey.isEmpty) {
-      return;
-    }
-
-    _model = GenerativeModel(
-      model: 'gemini-2.0-flash',
-      apiKey: _apiKey,
-      generationConfig: GenerationConfig(
-        temperature: 0.7,
-        maxOutputTokens: 1024,
-      ),
-      systemInstruction: Content.system(_systemPrompt),
-    );
-    _chat = _model!.startChat();
-  }
+  bool get isConfigured => _backendUrl.isNotEmpty;
 
   static const String _systemPrompt = '''
 You are a helpful health & safety assistant embedded in a Fall Detection app.
@@ -81,34 +67,56 @@ Important rules:
     return '[Current device state]\n${parts.join('\n')}';
   }
 
-  /// Send a user message and stream back the AI response.
+  /// Send a user message via the backend proxy.
   Future<String> sendMessage(String userMessage, AppState state) async {
-    if (_chat == null) {
+    if (_backendUrl.isEmpty) {
       return _offlineFactResponse(userMessage, state);
     }
 
+    return _sendViaBackend(userMessage, state);
+  }
+
+  Future<String> _sendViaBackend(String userMessage, AppState state) async {
     final contextBlock = _buildContext(state);
     final prompt = '$contextBlock\n\nUser: $userMessage';
 
-    try {
-      final response = await _chat!.sendMessage(Content.text(prompt));
-      return response.text ?? 'Sorry, I could not generate a response.';
-    } catch (e) {
-      debugPrint('Gemini request failed: $e');
-      final lower = e.toString().toLowerCase();
-      final quotaOrRateIssue =
-          lower.contains('quota') ||
-          lower.contains('rate limit') ||
-          lower.contains('429') ||
-          lower.contains('resource_exhausted');
+    final uri = Uri.parse('$_backendUrl/api/chat');
 
-      if (quotaOrRateIssue) {
-        return 'Gemini quota is currently unavailable for this key. '
-            'I switched to offline assistance mode for now.\n\n'
-            '${_offlineFactResponse(userMessage, state)}';
+    final body = jsonEncode({
+      'message': prompt,
+      'systemPrompt': _systemPrompt,
+      'model': 'llama-3.1-8b-instant',
+    });
+
+    try {
+      final response = await http
+          .post(uri, headers: {'Content-Type': 'application/json'}, body: body)
+          .timeout(const Duration(seconds: 20));
+
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        debugPrint(
+          'Backend request failed: ${response.statusCode} ${response.body}',
+        );
+        return 'Backend error (${response.statusCode}). '
+            'Please check backend URL and internet connection.';
       }
 
-      return 'AI service unavailable right now. Please verify GEMINI_API_KEY and internet connection.';
+      final decoded = jsonDecode(response.body) as Map<String, dynamic>;
+
+      if (decoded['success'] != true) {
+        final error = decoded['error'] ?? 'Unknown error';
+        return 'AI service error: $error';
+      }
+
+      final reply = decoded['reply'];
+      if (reply is String && reply.trim().isNotEmpty) {
+        return reply.trim();
+      }
+
+      return 'Sorry, I could not generate a response.';
+    } catch (e) {
+      debugPrint('Backend request error: $e');
+      return _offlineFactResponse(userMessage, state);
     }
   }
 
@@ -157,14 +165,12 @@ Important rules:
           '5. Check battery and permissions.';
     }
 
-    return 'I am running in offline factual mode (no Gemini key). '
+    return 'I am running in offline factual mode (no cloud AI key). '
         'Ask about: device status, fall response, heart rate, or Bluetooth troubleshooting.';
   }
 
   /// Reset conversation history.
   void resetChat() {
-    if (_model != null) {
-      _chat = _model!.startChat();
-    }
+    // No server-side chat session to reset when using Groq via HTTP.
   }
 }

@@ -51,9 +51,9 @@ dependencies:
   firebase_core: ^3.8.1
   cloud_firestore: ^5.6.0
   firebase_auth: ^5.4.0
-  google_generative_ai: ^0.4.6
   image_picker: ^1.1.2
   wifi_scan: ^0.4.1+2
+  flutter_dotenv: ^5.1.0
 
 dev_dependencies:
   flutter_test:

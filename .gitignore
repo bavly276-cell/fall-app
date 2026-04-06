@@ -46,6 +46,9 @@ app.*.map.json
 
 # Local secret defines (never commit real API keys)
 dart_define.local.json
+.env
+.env.local
+.env.*.local
 
 # Local/OS noise
 desktop.ini
