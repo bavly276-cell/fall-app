@@ -53,7 +53,6 @@ dependencies:
   firebase_auth: ^5.4.0
   image_picker: ^1.1.2
   wifi_scan: ^0.4.1+2
-  flutter_dotenv: ^5.1.0
 
 dev_dependencies:
   flutter_test:

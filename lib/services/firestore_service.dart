@@ -41,6 +41,9 @@ class FirestoreService {
   static CollectionReference get _eventsCol =>
       _userDoc.collection('fall_events');
 
+  static CollectionReference get _chatCol =>
+      _userDoc.collection('chat_messages');
+
   // ── Fall Events ──
 
   /// Save a fall event to Firestore.
@@ -136,11 +139,11 @@ class FirestoreService {
     try {
       await _userDoc.set({
         'patientName': patientName,
-        if (patientPhone != null) 'patientPhone': patientPhone,
-        if (patientEmail != null) 'patientEmail': patientEmail,
+        'patientPhone': patientPhone,
+        'patientEmail': patientEmail,
         'caregiverName': caregiverName,
         'caregiverPhone': caregiverPhone,
-        if (caregiverEmail != null) 'caregiverEmail': caregiverEmail,
+        'caregiverEmail': caregiverEmail,
         'smsAlertEnabled': smsAlertEnabled,
         'autoSmsOnConfirm': autoSmsOnConfirm,
         'updatedAt': FieldValue.serverTimestamp(),
@@ -188,6 +191,22 @@ class FirestoreService {
       }, SetOptions(merge: true));
     } catch (e) {
       _logFirestoreError('updateSensorSnapshot', e);
+    }
+  }
+
+  /// Save a chat message (user or assistant) under the current user.
+  static Future<void> saveChatMessage({
+    required bool isUser,
+    required String text,
+  }) async {
+    try {
+      await _chatCol.add({
+        'from': isUser ? 'user' : 'assistant',
+        'text': text,
+        'createdAt': FieldValue.serverTimestamp(),
+      });
+    } catch (e) {
+      _logFirestoreError('saveChatMessage', e);
     }
   }
 }

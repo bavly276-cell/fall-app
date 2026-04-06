@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../services/app_state.dart';
 import '../services/ai_chat_service.dart';
+import '../services/firestore_service.dart';
 import '../widgets/app_bottom_nav.dart';
 
 class ChatScreen extends StatefulWidget {
@@ -68,11 +69,17 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
 
     try {
       final state = Provider.of<AppState>(context, listen: false);
+      if (state.firebaseReady) {
+        await FirestoreService.saveChatMessage(isUser: true, text: text);
+      }
       final reply = await _chatService.sendMessage(text, state);
       setState(() {
         _messages.add(_ChatMessage(text: reply, isUser: false));
         _isTyping = false;
       });
+      if (state.firebaseReady) {
+        await FirestoreService.saveChatMessage(isUser: false, text: reply);
+      }
     } catch (e) {
       setState(() {
         _messages.add(

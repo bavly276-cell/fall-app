@@ -6,15 +6,8 @@ import 'package:http/http.dart' as http;
 import 'app_state.dart';
 
 class AiChatService {
-  // Backend proxy URL — set this to your deployed backend
-  // For local development: http://localhost:3000
-  // For production: https://your-backend-url.com
-  static const String _backendUrl = String.fromEnvironment(
-    'BACKEND_URL',
-    defaultValue: 'http://localhost:3000',
-  );
-
-  bool get isConfigured => _backendUrl.isNotEmpty;
+  // Offline mode — returns fact-based responses without API key
+  bool get isConfigured => false;
 
   static const String _systemPrompt = '''
 You are a helpful health & safety assistant embedded in a Fall Detection app.
@@ -67,57 +60,9 @@ Important rules:
     return '[Current device state]\n${parts.join('\n')}';
   }
 
-  /// Send a user message via the backend proxy.
+  /// Send a user message (offline mode only).
   Future<String> sendMessage(String userMessage, AppState state) async {
-    if (_backendUrl.isEmpty) {
-      return _offlineFactResponse(userMessage, state);
-    }
-
-    return _sendViaBackend(userMessage, state);
-  }
-
-  Future<String> _sendViaBackend(String userMessage, AppState state) async {
-    final contextBlock = _buildContext(state);
-    final prompt = '$contextBlock\n\nUser: $userMessage';
-
-    final uri = Uri.parse('$_backendUrl/api/chat');
-
-    final body = jsonEncode({
-      'message': prompt,
-      'systemPrompt': _systemPrompt,
-      'model': 'llama-3.1-8b-instant',
-    });
-
-    try {
-      final response = await http
-          .post(uri, headers: {'Content-Type': 'application/json'}, body: body)
-          .timeout(const Duration(seconds: 20));
-
-      if (response.statusCode < 200 || response.statusCode >= 300) {
-        debugPrint(
-          'Backend request failed: ${response.statusCode} ${response.body}',
-        );
-        return 'Backend error (${response.statusCode}). '
-            'Please check backend URL and internet connection.';
-      }
-
-      final decoded = jsonDecode(response.body) as Map<String, dynamic>;
-
-      if (decoded['success'] != true) {
-        final error = decoded['error'] ?? 'Unknown error';
-        return 'AI service error: $error';
-      }
-
-      final reply = decoded['reply'];
-      if (reply is String && reply.trim().isNotEmpty) {
-        return reply.trim();
-      }
-
-      return 'Sorry, I could not generate a response.';
-    } catch (e) {
-      debugPrint('Backend request error: $e');
-      return _offlineFactResponse(userMessage, state);
-    }
+    return _offlineFactResponse(userMessage, state);
   }
 
   String _offlineFactResponse(String userMessage, AppState state) {
