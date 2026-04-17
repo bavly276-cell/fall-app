@@ -1,7 +1,11 @@
+import 'dart:convert';
 import 'dart:math';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart' show rootBundle;
 import 'package:tflite_flutter/tflite_flutter.dart';
+
+import 'fall_detection_algorithm.dart';
 
 class TfliteFallDetectionService {
   TfliteFallDetectionService._();
@@ -10,8 +14,15 @@ class TfliteFallDetectionService {
       TfliteFallDetectionService._();
 
   static const String _modelAsset = 'assets/models/fall_detector.tflite';
-  static const int _windowSize = 60;
-  static const Duration _minInferenceInterval = Duration(milliseconds: 350);
+  static const String _metaAsset = 'assets/models/fall_detector_meta.json';
+  static const int _featureCount = 6;
+
+  int _windowSize = 64;
+  Duration _minInferenceInterval = const Duration(milliseconds: 240);
+  double _threshold = 0.7;
+
+  List<double> _mean = const [0, 0, 1, 0, 0, 0];
+  List<double> _std = const [1, 1, 1, 1, 1, 1];
 
   Interpreter? _interpreter;
   bool _ready = false;
@@ -24,10 +35,14 @@ class TfliteFallDetectionService {
     if (_ready) return;
 
     try {
+      await _loadMetadata();
+
       final options = InterpreterOptions()..threads = 1;
       _interpreter = await Interpreter.fromAsset(_modelAsset, options: options);
       _ready = true;
-      debugPrint('TFLite fall model loaded ($_modelAsset)');
+      debugPrint(
+        'TFLite fall model loaded ($_modelAsset), window=$_windowSize, threshold=$_threshold',
+      );
     } catch (e) {
       _ready = false;
       _interpreter = null;
@@ -35,11 +50,40 @@ class TfliteFallDetectionService {
     }
   }
 
-  double? addSampleAndPredict({required double accelMag, double? gyroMag}) {
-    final normalizedAccel = ((accelMag - 1.0).abs()).clamp(0.0, 4.0) / 4.0;
-    final normalizedGyro = (gyroMag ?? 0.0).abs().clamp(0.0, 8.0) / 8.0;
+  Future<void> _loadMetadata() async {
+    try {
+      final raw = await rootBundle.loadString(_metaAsset);
+      final jsonMap = jsonDecode(raw) as Map<String, dynamic>;
 
-    _window.add(<double>[normalizedAccel, normalizedGyro]);
+      _windowSize = (jsonMap['window_size'] as num?)?.toInt() ?? _windowSize;
+      final inferMs =
+          (jsonMap['inference_interval_ms'] as num?)?.toInt() ??
+          _minInferenceInterval.inMilliseconds;
+      _minInferenceInterval = Duration(milliseconds: inferMs.clamp(50, 2000));
+
+      _threshold =
+          (jsonMap['threshold'] as num?)?.toDouble().clamp(0.05, 0.98) ??
+          _threshold;
+
+      final m = jsonMap['mean'];
+      final s = jsonMap['std'];
+
+      if (m is List &&
+          s is List &&
+          m.length == _featureCount &&
+          s.length == _featureCount) {
+        _mean = m.map((e) => (e as num).toDouble()).toList();
+        _std = s.map((e) => max((e as num).toDouble().abs(), 1e-6)).toList();
+      }
+    } catch (_) {
+      // Metadata is optional; service falls back to safe defaults.
+    }
+  }
+
+  double? addSampleAndPredict({required SensorData data}) {
+    final sample = _normalizeSample(_toRawFeatureVector(data));
+
+    _window.add(sample);
     if (_window.length > _windowSize) {
       _window.removeAt(0);
     }
@@ -56,12 +100,7 @@ class TfliteFallDetectionService {
     _lastInferenceAt = now;
 
     try {
-      final input = [
-        List<List<double>>.generate(
-          _windowSize,
-          (i) => [_window[i][0], _window[i][1]],
-        ),
-      ];
+      final input = [List<List<double>>.from(_window)];
 
       final output = List.generate(1, (_) => List.filled(1, 0.0));
       _interpreter!.run(input, output);
@@ -87,6 +126,31 @@ class TfliteFallDetectionService {
     _interpreter?.close();
     _interpreter = null;
     _ready = false;
+  }
+
+  bool isFallByThreshold(double probability) {
+    return probability >= _threshold;
+  }
+
+  List<double> _toRawFeatureVector(SensorData data) {
+    // Prefer full 6-axis stream. If axes are missing, fall back to a safe
+    // approximate projection that still keeps the runtime path functional.
+    final ax = data.accX ?? data.accelMag;
+    final ay = data.accY ?? 0.0;
+    final az = data.accZ ?? 0.0;
+
+    final gx = data.gyroX ?? data.gyroMag ?? 0.0;
+    final gy = data.gyroY ?? 0.0;
+    final gz = data.gyroZ ?? 0.0;
+
+    return <double>[ax, ay, az, gx, gy, gz];
+  }
+
+  List<double> _normalizeSample(List<double> raw) {
+    return List<double>.generate(_featureCount, (i) {
+      final centered = raw[i] - _mean[i];
+      return centered / _std[i];
+    });
   }
 
   static String probabilityToLabel(double probability) {

@@ -6,7 +6,13 @@ class SensorData {
   final double spo2;
   final double tiltAngle;
   final double accelMag;
+  final double? accX;
+  final double? accY;
+  final double? accZ;
   final double? gyroMag;
+  final double? gyroX;
+  final double? gyroY;
+  final double? gyroZ;
   final int battery;
   final bool fallFlag;
   final bool? wifiConnected;
@@ -16,7 +22,13 @@ class SensorData {
     required this.spo2,
     required this.tiltAngle,
     required this.accelMag,
+    required this.accX,
+    required this.accY,
+    required this.accZ,
     required this.gyroMag,
+    required this.gyroX,
+    required this.gyroY,
+    required this.gyroZ,
     required this.battery,
     required this.fallFlag,
     required this.wifiConnected,
@@ -34,15 +46,48 @@ class SensorData {
         }
       }
 
+      double? parseAny(List<String> keys) {
+        for (final key in keys) {
+          final val = double.tryParse(map[key] ?? '');
+          if (val != null) return val;
+        }
+        return null;
+      }
+
+      final parsedAccX = parseAny(['AX', 'ACCX', 'ACX']);
+      final parsedAccY = parseAny(['AY', 'ACCY', 'ACY']);
+      final parsedAccZ = parseAny(['AZ', 'ACCZ', 'ACZ']);
+
+      final parsedGyroX = parseAny(['GX', 'GYROX']);
+      final parsedGyroY = parseAny(['GY', 'GYROY']);
+      final parsedGyroZ = parseAny(['GZ', 'GYROZ']);
+
+      final parsedGyroMag =
+          double.tryParse(map['GYRO'] ?? '') ??
+          double.tryParse(map['GMAG'] ?? '');
+
+      final computedGyroMag =
+          (parsedGyroX != null && parsedGyroY != null && parsedGyroZ != null)
+          ? ((parsedGyroX * parsedGyroX) +
+                    (parsedGyroY * parsedGyroY) +
+                    (parsedGyroZ * parsedGyroZ))
+                .sqrtSafe()
+          : null;
+
       return SensorData(
         heartRate: int.tryParse(map['HR'] ?? '') ?? 0,
         spo2: double.tryParse(map['SPO2'] ?? '') ?? 0.0,
         tiltAngle: double.tryParse(map['TILT'] ?? '') ?? 0.0,
         accelMag: double.tryParse(map['ACC'] ?? '') ?? 1.0,
-        // Optional (only if firmware includes it). Accept either GYRO or GMAG.
-        gyroMag:
-            double.tryParse(map['GYRO'] ?? '') ??
-            double.tryParse(map['GMAG'] ?? ''),
+        accX: parsedAccX,
+        accY: parsedAccY,
+        accZ: parsedAccZ,
+        // Optional (only if firmware includes it). Accept either GYRO or GMAG,
+        // otherwise derive from 3-axis gyroscope if present.
+        gyroMag: parsedGyroMag ?? computedGyroMag,
+        gyroX: parsedGyroX,
+        gyroY: parsedGyroY,
+        gyroZ: parsedGyroZ,
         battery: int.tryParse(map['BATT'] ?? '') ?? -1,
         fallFlag: (map['FALL'] ?? '0') == '1',
         wifiConnected: map.containsKey('WIFI')
@@ -60,9 +105,28 @@ class SensorData {
       'SensorData(HR:$heartRate, SPO2:${spo2.toStringAsFixed(1)}, '
       'TILT:${tiltAngle.toStringAsFixed(1)}, '
       'ACC:${accelMag.toStringAsFixed(2)}, '
+      'AX:${accX?.toStringAsFixed(3) ?? "-"}, '
+      'AY:${accY?.toStringAsFixed(3) ?? "-"}, '
+      'AZ:${accZ?.toStringAsFixed(3) ?? "-"}, '
       'GYRO:${gyroMag?.toStringAsFixed(2) ?? "-"}, '
+      'GX:${gyroX?.toStringAsFixed(3) ?? "-"}, '
+      'GY:${gyroY?.toStringAsFixed(3) ?? "-"}, '
+      'GZ:${gyroZ?.toStringAsFixed(3) ?? "-"}, '
       'BATT:$battery, '
       'FALL:$fallFlag, WIFI:${wifiConnected ?? "?"})';
+}
+
+extension on num {
+  double sqrtSafe() {
+    if (this <= 0) return 0.0;
+    // Newton-Raphson, avoids importing dart:math in this file.
+    double x = toDouble();
+    double guess = x > 1 ? x : 1.0;
+    for (int i = 0; i < 10; i++) {
+      guess = 0.5 * (guess + x / guess);
+    }
+    return guess;
+  }
 }
 
 /// Phone-side fall detection algorithm that mirrors & supplements

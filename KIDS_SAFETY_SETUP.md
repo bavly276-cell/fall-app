@@ -101,6 +101,11 @@ For best reliability on Android:
 
 ### Train and export fall model
 
+Dataset must contain 6-axis time series:
+- `acc_x, acc_y, acc_z, gyro_x, gyro_y, gyro_z, label`
+- See format: `ml/FALL_DATASET_FORMAT.md`
+- Starter template: `ml/data/fall_timeseries.template.csv`
+
 ```bash
 python -m venv .venv
 .venv\Scripts\activate
@@ -110,6 +115,7 @@ python ml/train_fall_model.py
 
 Output:
 - `assets/models/fall_detector.tflite`
+- `assets/models/fall_detector_meta.json`
 
 Optional activity model:
 

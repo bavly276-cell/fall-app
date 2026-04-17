@@ -756,7 +756,7 @@ class AppState extends ChangeNotifier {
 
     // -- Local TFLite fall classification --
     final tfliteProbability = TfliteFallDetectionService.instance
-        .addSampleAndPredict(accelMag: accelMag, gyroMag: data.gyroMag);
+        .addSampleAndPredict(data: data);
 
     aiFallProbability =
         tfliteProbability ??
@@ -775,10 +775,16 @@ class AppState extends ChangeNotifier {
     );
 
     // Send immediate parent update for danger events (fall or abnormal vitals).
+    final aiSaysFall =
+        tfliteProbability != null &&
+        TfliteFallDetectionService.instance.isFallByThreshold(
+          tfliteProbability,
+        );
+
     unawaited(
       _handleImmediateKidsSafetyUpdate(
         triggerType: 'immediate_sensor',
-        fallDetected: data.fallFlag || aiFallProbability > 0.85,
+        fallDetected: data.fallFlag || aiSaysFall,
         gyroMag: data.gyroMag,
       ),
     );
@@ -792,7 +798,7 @@ class AppState extends ChangeNotifier {
     }
 
     // 2. Local AI Trigger (High Confidence)
-    if (aiFallProbability > 0.85 && !alertActive && !inFalseAlarmCooldown) {
+    if (aiSaysFall && !alertActive && !inFalseAlarmCooldown) {
       debugPrint('AI triggered fall alert with confidence: $aiFallProbability');
       _triggerFallAlert();
       return;
