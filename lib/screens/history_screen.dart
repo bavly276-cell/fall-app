@@ -198,7 +198,7 @@ class HistoryScreen extends StatelessWidget {
                 ),
               ],
             ),
-      bottomNavigationBar: const AppBottomNav(currentIndex: 3),
+      bottomNavigationBar: const AppBottomNav(currentIndex: 2),
     );
   }
 

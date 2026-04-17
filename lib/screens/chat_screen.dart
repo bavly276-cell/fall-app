@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../services/app_state.dart';
@@ -70,17 +72,29 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     try {
       final state = Provider.of<AppState>(context, listen: false);
       if (state.firebaseReady) {
-        await FirestoreService.saveChatMessage(isUser: true, text: text);
+        unawaited(
+          FirestoreService.saveChatMessage(
+            isUser: true,
+            text: text,
+          ).timeout(const Duration(seconds: 3), onTimeout: () {}),
+        );
       }
       final reply = await _chatService.sendMessage(text, state);
+      if (!mounted) return;
       setState(() {
         _messages.add(_ChatMessage(text: reply, isUser: false));
         _isTyping = false;
       });
       if (state.firebaseReady) {
-        await FirestoreService.saveChatMessage(isUser: false, text: reply);
+        unawaited(
+          FirestoreService.saveChatMessage(
+            isUser: false,
+            text: reply,
+          ).timeout(const Duration(seconds: 3), onTimeout: () {}),
+        );
       }
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _messages.add(
           _ChatMessage(
@@ -93,7 +107,9 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         _isTyping = false;
       });
     }
-    _scrollToBottom();
+    if (mounted) {
+      _scrollToBottom();
+    }
   }
 
   @override
@@ -165,9 +181,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
                     ),
                     const SizedBox(width: 6),
                     Text(
-                      _chatService.isConfigured
-                          ? 'AI connected'
-                          : 'AI key missing',
+                      _chatService.statusLabel,
                       style: theme.textTheme.labelMedium?.copyWith(
                         fontWeight: FontWeight.w600,
                         color: _chatService.isConfigured
@@ -272,7 +286,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
           ),
         ],
       ),
-      bottomNavigationBar: const AppBottomNav(currentIndex: 4),
+      bottomNavigationBar: const AppBottomNav(currentIndex: 3),
     );
   }
 

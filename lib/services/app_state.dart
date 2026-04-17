@@ -1,13 +1,17 @@
 import 'dart:async';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/fall_event.dart';
+import '../models/smartwatch_capability_report.dart';
 import '../utils/constants.dart';
 import 'ble_service.dart';
 import 'sms_service.dart';
 import 'location_service.dart';
 import 'fall_detection_algorithm.dart';
 import 'firestore_service.dart';
+import 'medical_analysis_service.dart';
+import 'ai_fall_detector.dart';
 
 class AppState extends ChangeNotifier {
   // ── Theme ──
@@ -16,18 +20,18 @@ class AppState extends ChangeNotifier {
   // ── Device State ──
   String deviceState = 'IDLE';
   double batteryLevel = 0;
-  bool wifiConnected = false;
-  bool wifiFallbackEnabled = true;
-  String wifiSsid = '';
-  String wifiPassword = '';
-  String wifiServerUrl = '';
   double heartRate = 0.0;
   double spo2 = 0.0;
+  double bodyTemperature = 37.0; // New: Body temperature support
   double tiltAngle = 0.0;
   double accelMag = 1.0;
   bool alertActive = false;
   bool _monitoring = false;
   bool get isMonitoring => _monitoring;
+
+  // ── AI Detection State ──
+  double aiFallProbability = 0.0;
+  String aiLabel = 'Stable';
 
   // ── Caregiver / Patient ──
   String _caregiverName = '';
@@ -40,6 +44,25 @@ class AppState extends ChangeNotifier {
   String? _patientPhotoBase64;
 
   bool _onboardingComplete = false;
+
+  // ── Kids Mode ── (NEW)
+  bool _kidsModeEnabled = false;
+  double? _lastKidsLat;
+  double? _lastKidsLon;
+  bool _kidsModeGpsValid = false;
+  DateTime? _lastKidsGpsUpdate;
+  List<({double lat, double lon, DateTime timestamp})> _kidsLocationHistory =
+      [];
+
+  bool get kidsModeEnabled => _kidsModeEnabled;
+  double? get lastKidsLat => _lastKidsLat;
+  double? get lastKidsLon => _lastKidsLon;
+  bool get kidsModeGpsValid => _kidsModeGpsValid;
+  DateTime? get lastKidsGpsUpdate => _lastKidsGpsUpdate;
+  List<({double lat, double lon, DateTime timestamp})>
+  get kidsLocationHistory => _kidsLocationHistory;
+  
+  StreamSubscription? _remoteKidsSub;
 
   String get caregiverName => _caregiverName;
   String get patientName => _patientName;
@@ -98,6 +121,38 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  // ── Kids Mode Methods ── (NEW)
+  void enableKidsMode() {
+    _kidsModeEnabled = true;
+    _saveBoolPref('kids_mode_enabled', true);
+    _kidsLocationHistory = [];
+    notifyListeners();
+  }
+
+  void disableKidsMode() {
+    _kidsModeEnabled = false;
+    _saveBoolPref('kids_mode_enabled', false);
+    _remoteKidsSub?.cancel();
+    notifyListeners();
+  }
+
+  void updateKidsGpsLocation(double? lat, double? lon, bool valid) {
+    _lastKidsLat = lat;
+    _lastKidsLon = lon;
+    _kidsModeGpsValid = valid;
+    _lastKidsGpsUpdate = DateTime.now();
+
+    if (valid && lat != null && lon != null) {
+      _kidsLocationHistory.add((lat: lat, lon: lon, timestamp: DateTime.now()));
+      // Keep only last 100 locations
+      if (_kidsLocationHistory.length > 100) {
+        _kidsLocationHistory.removeAt(0);
+      }
+    }
+
+    notifyListeners();
+  }
+
   Future<void> setPatientPhotoBase64(String? base64) async {
     _patientPhotoBase64 = base64;
     try {
@@ -123,8 +178,26 @@ class AppState extends ChangeNotifier {
   String? bleDeviceId;
   double bleDeviceBattery = 0;
   bool _bleReconnecting = false;
-  bool get isBleConnected => bleDeviceId != null;
+  SmartwatchCapabilityReport? smartwatchCapabilityReport;
+
+  // Persisted identity used for auto-connect on next app open.
+  String? lastBleDeviceId;
+  String? lastBleDeviceName;
+
+  // Connected means the BLE layer is connected now.
+  bool get isBleConnected => BleService.isConnected;
   bool get isBleReconnecting => _bleReconnecting;
+
+  bool _autoConnectAttempted = false;
+
+  // 20s cancellation window (report)
+  static const int _alertCancelWindowSeconds = 20;
+  static const Duration _falseAlarmCooldown = Duration(seconds: 15);
+  Timer? _alertCountdownTimer;
+  int _alertSecondsRemaining = 0;
+  int get alertSecondsRemaining => _alertSecondsRemaining;
+
+  DateTime? _lastFalseAlarmAt;
 
   // ── GPS ──
   String? lastGpsLocation;
@@ -173,11 +246,27 @@ class AppState extends ChangeNotifier {
       smsAlertEnabled = prefs.getBool('sms_alert_enabled') ?? smsAlertEnabled;
       autoSmsOnConfirm =
           prefs.getBool('auto_sms_on_confirm') ?? autoSmsOnConfirm;
-      wifiFallbackEnabled =
-          prefs.getBool('wifi_fallback_enabled') ?? wifiFallbackEnabled;
-      wifiSsid = prefs.getString('wifi_ssid') ?? wifiSsid;
-      wifiPassword = prefs.getString('wifi_password') ?? wifiPassword;
-      wifiServerUrl = prefs.getString('wifi_server_url') ?? wifiServerUrl;
+
+      // Restore last saved sensor snapshot (for immediate UI on app open)
+      final lastHr = prefs.getDouble(AppConstants.prefLastSensorHr);
+      final lastSpo2 = prefs.getDouble(AppConstants.prefLastSensorSpo2);
+      final lastTilt = prefs.getDouble(AppConstants.prefLastSensorTilt);
+      final lastAcc = prefs.getDouble(AppConstants.prefLastSensorAcc);
+      final lastBatt = prefs.getDouble(AppConstants.prefLastSensorBatt);
+      final lastAtMs = prefs.getInt(AppConstants.prefLastSensorAtMs);
+
+      if (lastHr != null) heartRate = lastHr;
+      if (lastSpo2 != null) spo2 = lastSpo2;
+      if (lastTilt != null) tiltAngle = lastTilt;
+      if (lastAcc != null) accelMag = lastAcc;
+      if (lastBatt != null) batteryLevel = lastBatt;
+      if (lastAtMs != null && lastAtMs > 0) {
+        lastSensorUpdate = DateTime.fromMillisecondsSinceEpoch(lastAtMs);
+      }
+
+      // Restore last known device identity (used for auto-connect)
+      lastBleDeviceId = prefs.getString(AppConstants.prefLastBleDeviceId);
+      lastBleDeviceName = prefs.getString(AppConstants.prefLastBleDeviceName);
       notifyListeners();
     } catch (_) {
       // Keep defaults if local storage is unavailable.
@@ -195,6 +284,20 @@ class AppState extends ChangeNotifier {
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setBool(key, value);
+    } catch (_) {}
+  }
+
+  Future<void> _saveDoublePref(String key, double value) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setDouble(key, value);
+    } catch (_) {}
+  }
+
+  Future<void> _saveIntPref(String key, int value) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setInt(key, value);
     } catch (_) {}
   }
 
@@ -227,6 +330,39 @@ class AppState extends ChangeNotifier {
     if (history.isNotEmpty) {
       fallHistory = history;
     }
+    
+    // Start listening for remote kids mode location updates
+    _remoteKidsSub?.cancel();
+    _remoteKidsSub = FirestoreService.kidsLocationStream().listen((list) {
+      if (!_kidsModeEnabled || list.isEmpty) return;
+      
+      // If we are NOT connected via BLE, use cloud data for "Remote Tracking"
+      if (!BleService.isConnected) {
+        final last = list.first;
+        final lat = (last['latitude'] as num).toDouble();
+        final lon = (last['longitude'] as num).toDouble();
+        final ts = (last['timestamp'] as Timestamp?)?.toDate() ?? DateTime.now();
+        
+        // Only update if it's newer than our local data
+        if (_lastKidsGpsUpdate == null || ts.isAfter(_lastKidsGpsUpdate!)) {
+          _lastKidsLat = lat;
+          _lastKidsLon = lon;
+          _kidsModeGpsValid = true;
+          _lastKidsGpsUpdate = ts;
+          
+          // Rebuild history from cloud if local is empty
+          if (_kidsLocationHistory.isEmpty) {
+            _kidsLocationHistory = list.take(100).map((d) => (
+              lat: (d['latitude'] as num).toDouble(),
+              lon: (d['longitude'] as num).toDouble(),
+              timestamp: (d['timestamp'] as Timestamp?)?.toDate() ?? DateTime.now(),
+            )).toList().reversed.toList();
+          }
+          
+          notifyListeners();
+        }
+      }
+    });
 
     notifyListeners();
   }
@@ -237,6 +373,31 @@ class AppState extends ChangeNotifier {
     BleService.setConnectionCallback((connected, deviceName) {
       if (connected) {
         _bleReconnecting = false;
+
+        // Ensure AppState knows *which* device is connected (id + name)
+        final dev = BleService.connectedDevice;
+        if (dev != null) {
+          final rawId = dev.remoteId.str;
+          final shortId = rawId.length > 6
+              ? rawId.substring(rawId.length - 6)
+              : rawId;
+          final name = dev.platformName.isNotEmpty
+              ? dev.platformName
+              : (deviceName?.isNotEmpty == true ? deviceName! : 'BLE-$shortId');
+          // Battery may be unavailable; we update again when polling fires.
+          BleService.readBatteryLevel().then((batt) {
+            setBleDevice(
+              name: name,
+              id: rawId,
+              battery: batt >= 0 ? batt.toDouble() : bleDeviceBattery,
+            );
+          });
+
+          BleService.inspectConnectedDevice().then((report) {
+            smartwatchCapabilityReport = report;
+            notifyListeners();
+          });
+        }
 
         // Start battery polling
         BleService.startBatteryPolling(
@@ -253,14 +414,23 @@ class AppState extends ChangeNotifier {
           onFallData: (data) => _handleFallDataFromArduino(data),
         );
 
-        // Optional support for standard smartwatch HR profile (0x180D/0x2A37).
-        // ESP32 custom stream remains primary when active.
-        BleService.subscribeStandardHeartRate(
+        // Optional support for standard smartwatch health profiles.
+        // This enables universal monitoring for non-ESP32 devices.
+        BleService.subscribeUniversalVitals(
           onHeartRate: (hr) => _handleStandardHeartRate(hr),
+          onSpO2: (val) => _handleStandardSpO2(val),
+          onTemp: (val) => _handleStandardTemperature(val),
         );
+        
+        // NEW: Fix automatic GPS subscription if kids mode is active
+        if (_kidsModeEnabled) {
+          BleService.subscribeGpsData(
+            onGpsData: (lat, lon, valid) => updateKidsGpsLocation(lat, lon, valid),
+          );
+        }
 
         _monitoring = true;
-        deviceState = 'MONITORING';
+        deviceState = 'Active';
       } else {
         if (BleService.autoReconnectEnabled &&
             BleService.reconnectAttempts > 0) {
@@ -274,11 +444,35 @@ class AppState extends ChangeNotifier {
     });
   }
 
+  /// Auto-connect to the last known BLE device (silent, best-effort).
+  /// Called once when the app opens.
+  Future<void> tryAutoConnectToLastDevice() async {
+    if (_autoConnectAttempted) return;
+    _autoConnectAttempted = true;
+
+    if (BleService.isConnected) return;
+
+    final id = lastBleDeviceId;
+    if (id == null || id.isEmpty) return;
+
+    _bleReconnecting = true;
+    notifyListeners();
+
+    try {
+      final ok = await BleService.autoConnectToDeviceId(id);
+      if (!ok) {
+        _bleReconnecting = false;
+        notifyListeners();
+      }
+    } catch (_) {
+      _bleReconnecting = false;
+      notifyListeners();
+    }
+  }
+
   // ── Sensor snapshot throttle ──
-  DateTime? _lastSnapshotSync;
   DateTime? _lastUiNotifyAt;
   DateTime? _lastCustomSensorAt;
-  Completer<bool?>? _pendingWifiStatus;
   static const Duration _minUiNotifyInterval = Duration(milliseconds: 220);
 
   void _notifyUiThrottled() {
@@ -316,53 +510,51 @@ class AppState extends ChangeNotifier {
       accelMag = data.accelMag;
       uiChanged = true;
     }
-
-    if (data.wifiConnected != null) {
-      if (wifiConnected != data.wifiConnected!) {
-        wifiConnected = data.wifiConnected!;
-        uiChanged = true;
-      }
-      if (_pendingWifiStatus != null && !_pendingWifiStatus!.isCompleted) {
-        _pendingWifiStatus!.complete(data.wifiConnected!);
-      }
-    }
     lastSensorUpdate = DateTime.now();
 
-    // Update battery from sensor stream
-    if (data.battery >= 0) {
-      final nextBattery = data.battery.toDouble();
-      if ((nextBattery - batteryLevel).abs() >= 1.0) {
-        batteryLevel = nextBattery;
-        bleDeviceBattery = nextBattery;
-        uiChanged = true;
-      }
-    }
+    // Add data point to medical analysis service
+    MedicalAnalysisService.addDataPoint(
+      MedicalDataPoint(
+        timestamp: DateTime.now(),
+        heartRate: heartRate,
+        spO2: spo2,
+        temperature: null, // Not available from basic sensor data
+        accelMag: accelMag,
+        battery: batteryLevel,
+        latitude: null,
+        longitude: null,
+      ),
+    );
 
-    // Sync sensor snapshot to Firestore every 10 seconds
-    if (_firebaseReady) {
-      final now = DateTime.now();
-      if (_lastSnapshotSync == null ||
-          now.difference(_lastSnapshotSync!).inSeconds >= 10) {
-        _lastSnapshotSync = now;
-        FirestoreService.updateSensorSnapshot(
-          heartRate: heartRate,
-          spo2: spo2,
-          tiltAngle: tiltAngle,
-          accelMag: accelMag,
-          battery: batteryLevel,
-          deviceState: deviceState,
-        );
-      }
-    }
+    _persistLastSensorSnapshotThrottled();
 
-    // Arduino sent FALL:1 flag in the sensor stream
-    if (data.fallFlag && !alertActive) {
+    // -- REAL AI CLASSIFICATION --
+    final nextProbability = AiFallDetector.predict(
+      accelMag,
+      tiltAngle,
+      heartRate,
+      spo2,
+    );
+    aiFallProbability = nextProbability;
+    aiLabel = AiFallDetector.getLabel(aiFallProbability);
+
+    final inFalseAlarmCooldown = _isInFalseAlarmCooldown();
+
+    // 1. Hardware Trigger
+    if (data.fallFlag && !alertActive && !inFalseAlarmCooldown) {
       _triggerFallAlert();
       return;
     }
 
-    // Phone-side fall detection algorithm (redundant safety)
-    if (!alertActive) {
+    // 2. Local AI Trigger (High Confidence)
+    if (aiFallProbability > 0.85 && !alertActive && !inFalseAlarmCooldown) {
+      debugPrint('AI triggered fall alert with confidence: $aiFallProbability');
+      _triggerFallAlert();
+      return;
+    }
+
+    // 3. Fallback Algorithm Trigger
+    if (!alertActive && !inFalseAlarmCooldown) {
       final phoneFallDetected = _fallAlgorithm.processSensorData(data);
       if (phoneFallDetected) {
         _triggerFallAlert();
@@ -373,6 +565,23 @@ class AppState extends ChangeNotifier {
     if (uiChanged) {
       _notifyUiThrottled();
     }
+  }
+
+  DateTime? _lastLocalSnapshotSavedAt;
+  void _persistLastSensorSnapshotThrottled() {
+    final now = DateTime.now();
+    if (_lastLocalSnapshotSavedAt != null &&
+        now.difference(_lastLocalSnapshotSavedAt!).inMilliseconds < 900) {
+      return;
+    }
+    _lastLocalSnapshotSavedAt = now;
+
+    _saveDoublePref(AppConstants.prefLastSensorHr, heartRate);
+    _saveDoublePref(AppConstants.prefLastSensorSpo2, spo2);
+    _saveDoublePref(AppConstants.prefLastSensorTilt, tiltAngle);
+    _saveDoublePref(AppConstants.prefLastSensorAcc, accelMag);
+    _saveDoublePref(AppConstants.prefLastSensorBatt, batteryLevel);
+    _saveIntPref(AppConstants.prefLastSensorAtMs, now.millisecondsSinceEpoch);
   }
 
   void _handleStandardHeartRate(int hr) {
@@ -387,8 +596,77 @@ class AppState extends ChangeNotifier {
     if ((hr.toDouble() - heartRate).abs() >= 1.0) {
       heartRate = hr.toDouble();
       lastSensorUpdate = DateTime.now();
+      
+      // Update medical analysis
+      MedicalAnalysisService.addDataPoint(
+        MedicalDataPoint(
+          timestamp: DateTime.now(),
+          heartRate: heartRate,
+          spO2: spo2,
+          temperature: bodyTemperature,
+          accelMag: accelMag,
+          battery: batteryLevel,
+        ),
+      );
+      
       _notifyUiThrottled();
     }
+  }
+
+  void _handleStandardSpO2(double val) {
+    if (val <= 0) return;
+    final customFresh =
+        _lastCustomSensorAt != null &&
+        DateTime.now().difference(_lastCustomSensorAt!).inSeconds < 3;
+    if (customFresh) return;
+
+    if ((val - spo2).abs() >= 0.5) {
+      spo2 = val;
+      lastSensorUpdate = DateTime.now();
+      MedicalAnalysisService.addDataPoint(
+        MedicalDataPoint(
+          timestamp: DateTime.now(),
+          heartRate: heartRate,
+          spO2: spo2,
+          temperature: bodyTemperature,
+          accelMag: accelMag,
+          battery: batteryLevel,
+        ),
+      );
+      _notifyUiThrottled();
+    }
+  }
+
+  void _handleStandardTemperature(double val) {
+    if (val <= 0) return;
+    
+    // Most smartwatches with temp don't have custom ESP32 streams, 
+    // but we check anyway.
+    final customFresh =
+        _lastCustomSensorAt != null &&
+        DateTime.now().difference(_lastCustomSensorAt!).inSeconds < 3;
+    if (customFresh) return;
+
+    if ((val - bodyTemperature).abs() >= 0.1) {
+      bodyTemperature = val;
+      lastSensorUpdate = DateTime.now();
+      MedicalAnalysisService.addDataPoint(
+        MedicalDataPoint(
+          timestamp: DateTime.now(),
+          heartRate: heartRate,
+          spO2: spo2,
+          temperature: bodyTemperature,
+          accelMag: accelMag,
+          battery: batteryLevel,
+        ),
+      );
+      _notifyUiThrottled();
+    }
+  }
+
+  bool _isInFalseAlarmCooldown() {
+    if (_lastFalseAlarmAt == null) return false;
+    return DateTime.now().difference(_lastFalseAlarmAt!) < _falseAlarmCooldown;
   }
 
   /// Handle binary fall alert from Arduino (redundant channel).
@@ -409,10 +687,17 @@ class AppState extends ChangeNotifier {
   void _triggerFallAlert() async {
     alertActive = true;
     deviceState = 'FALL_DETECTED';
+
+    // Start/reset the 20-second cancellation window.
+    _startAlertCountdown();
     notifyListeners();
 
     // Fetch GPS immediately
     final pos = await LocationService.getCurrentPosition();
+
+    // If the user cancelled the alert while GPS was fetching, abort.
+    if (!alertActive) return;
+
     if (pos != null) {
       lastGpsLocation = LocationService.formatPosition(pos);
       lastMapsUrl = LocationService.getMapsUrl(pos);
@@ -420,11 +705,26 @@ class AppState extends ChangeNotifier {
 
     deviceState = 'ALERT_SENT';
     notifyListeners();
+  }
 
-    // Auto-send SMS if enabled
-    if (smsAlertEnabled && autoSmsOnConfirm) {
-      sendSmsAlert();
-    }
+  void _startAlertCountdown() {
+    _alertCountdownTimer?.cancel();
+    _alertSecondsRemaining = _alertCancelWindowSeconds;
+
+    _alertCountdownTimer = Timer.periodic(const Duration(seconds: 1), (t) {
+      if (!alertActive) {
+        t.cancel();
+        return;
+      }
+
+      _alertSecondsRemaining = (_alertSecondsRemaining - 1).clamp(0, 9999);
+      notifyListeners();
+
+      if (_alertSecondsRemaining <= 0) {
+        t.cancel();
+        unawaited(confirmFall(fromCountdown: true));
+      }
+    });
   }
 
   void setBleDevice({
@@ -437,7 +737,13 @@ class AppState extends ChangeNotifier {
     final prevBattery = bleDeviceBattery;
     bleDeviceName = name;
     bleDeviceId = id;
+    lastBleDeviceId = id;
+    lastBleDeviceName = name;
     bleDeviceBattery = battery;
+
+    // Persist for auto-connect next time.
+    _saveStringPref(AppConstants.prefLastBleDeviceId, id);
+    _saveStringPref(AppConstants.prefLastBleDeviceName, name);
     if (battery >= 0) batteryLevel = battery;
     _bleReconnecting = false;
     if (prevId != bleDeviceId ||
@@ -451,6 +757,7 @@ class AppState extends ChangeNotifier {
     bleDeviceName = null;
     bleDeviceId = null;
     bleDeviceBattery = 0;
+    smartwatchCapabilityReport = null;
     _fallAlgorithm.reset();
     notifyListeners();
   }
@@ -462,98 +769,6 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  // ── WiFi Settings ──
-
-  void setWifiConnected(bool connected) {
-    if (wifiConnected == connected) return;
-    wifiConnected = connected;
-    if (_pendingWifiStatus != null && !_pendingWifiStatus!.isCompleted) {
-      _pendingWifiStatus!.complete(connected);
-    }
-    notifyListeners();
-  }
-
-  void toggleWifiFallback() {
-    wifiFallbackEnabled = !wifiFallbackEnabled;
-    _saveBoolPref('wifi_fallback_enabled', wifiFallbackEnabled);
-    notifyListeners();
-  }
-
-  Future<void> saveWifiSettings({
-    required String ssid,
-    required String password,
-    required String serverUrl,
-  }) async {
-    wifiSsid = ssid;
-    wifiPassword = password;
-    wifiServerUrl = serverUrl;
-    await _saveStringPref('wifi_ssid', wifiSsid);
-    await _saveStringPref('wifi_password', wifiPassword);
-    await _saveStringPref('wifi_server_url', wifiServerUrl);
-    notifyListeners();
-  }
-
-  Future<void> forgetWifiSettings() async {
-    wifiSsid = '';
-    wifiPassword = '';
-    wifiConnected = false;
-    await _saveStringPref('wifi_ssid', wifiSsid);
-    await _saveStringPref('wifi_password', wifiPassword);
-    notifyListeners();
-  }
-
-  Future<bool?> _awaitWifiStatusFromDevice({
-    Duration timeout = const Duration(seconds: 12),
-  }) async {
-    _pendingWifiStatus = Completer<bool>();
-    try {
-      return await _pendingWifiStatus!.future.timeout(
-        timeout,
-        onTimeout: () => null,
-      );
-    } finally {
-      _pendingWifiStatus = null;
-    }
-  }
-
-  /// Push currently saved WiFi settings to ESP32 over BLE.
-  /// Returns true when payload is accepted by the BLE characteristic write.
-  Future<bool> addWifiDeviceFromSavedSettings({
-    bool verifyConnection = false,
-  }) async {
-    if (!isBleConnected) return false;
-    if (wifiSsid.trim().isEmpty) return false;
-
-    final sent = await BleService.sendWifiConfig(
-      ssid: wifiSsid,
-      password: wifiPassword,
-      serverUrl: wifiServerUrl,
-    );
-
-    if (sent) {
-      if (verifyConnection) {
-        final status = await _awaitWifiStatusFromDevice();
-        if (status == true) {
-          wifiConnected = true;
-        } else {
-          await forgetWifiSettings();
-          return false;
-        }
-      } else {
-        // Device will report actual status in sensor stream (WIFI:0/1).
-        // We optimistically show connected while waiting for telemetry refresh.
-        wifiConnected = true;
-      }
-      notifyListeners();
-    }
-
-    return sent;
-  }
-
-  void disconnectWifiDevice() {
-    wifiConnected = false;
-    notifyListeners();
-  }
 
   // ── Theme ──
 
@@ -572,14 +787,25 @@ class AppState extends ChangeNotifier {
     _triggerFallAlert();
   }
 
-  void confirmFall() async {
+  Future<void> confirmFall({bool fromCountdown = false}) async {
+    if (!alertActive) return;
+
+    // Stop any pending auto-confirm.
+    _alertCountdownTimer?.cancel();
+    _alertCountdownTimer = null;
+    _alertSecondsRemaining = 0;
+
     // Get GPS for the record
     final pos = await LocationService.getCurrentPosition();
     String? gps;
     if (pos != null) {
       gps = LocationService.formatPosition(pos);
+      lastGpsLocation = gps;
       lastMapsUrl = LocationService.getMapsUrl(pos);
     }
+
+    // If the user cancelled while we were fetching GPS, do nothing.
+    if (!alertActive) return;
 
     final event = FallEvent(
       time: DateTime.now(),
@@ -590,32 +816,56 @@ class AppState extends ChangeNotifier {
       gpsLocation: gps,
     );
     fallHistory.insert(0, event);
+
+    // Add fall event to medical analysis
+    MedicalAnalysisService.addFallEvent(event);
+
     if (_firebaseReady) FirestoreService.saveFallEvent(event);
 
-    // Auto-send SMS if enabled
-    if (smsAlertEnabled && autoSmsOnConfirm) {
-      sendSmsAlert();
+    // Auto-send SMS when confirmed (manual or countdown) - only if BLE connected
+    if (smsAlertEnabled && autoSmsOnConfirm && BleService.isConnected) {
+      unawaited(sendSmsAlert());
     }
+
     resetAlert();
   }
 
   void cancelAlert() {
+    // Immediately dismiss the alert UI — this must happen first.
+    _alertCountdownTimer?.cancel();
+    _alertCountdownTimer = null;
+    _alertSecondsRemaining = 0;
+    alertActive = false;
+    deviceState = _monitoring ? 'Active' : 'IDLE';
+    lastGpsLocation = null;
+    lastMapsUrl = null;
+    _lastFalseAlarmAt = DateTime.now();
+    // Best-effort: tell the ESP32 to clear its fall state too.
+    BleService.sendFallCancel();
+    notifyListeners();
+
+    // Fire-and-forget: log the false alarm after UI is already dismissed.
     final event = FallEvent(
       time: DateTime.now(),
       heartRate: heartRate,
       tiltAngle: tiltAngle,
       accelMag: accelMag,
       status: 'FALSE ALARM',
-      gpsLocation: lastGpsLocation,
+      gpsLocation: null,
     );
     fallHistory.insert(0, event);
     if (_firebaseReady) FirestoreService.saveFallEvent(event);
-    resetAlert();
   }
 
   void resetAlert() {
     alertActive = false;
-    deviceState = _monitoring ? 'MONITORING' : 'IDLE';
+    deviceState = _monitoring ? 'Active' : 'IDLE';
+    lastGpsLocation = null;
+    lastMapsUrl = null;
+
+    _alertCountdownTimer?.cancel();
+    _alertCountdownTimer = null;
+    _alertSecondsRemaining = 0;
     notifyListeners();
   }
 
@@ -656,6 +906,20 @@ class AppState extends ChangeNotifier {
   }
 
   Future<bool> sendSmsAlert() async {
+    if (caregiverPhone.trim().isEmpty) {
+      lastSmsError =
+          'Please add a caregiver phone number in the Profile screen.';
+      notifyListeners();
+      return false;
+    }
+
+    // CHECK IF BLE IS CONNECTED - Only send SMS if BLE is active
+    if (!BleService.isConnected) {
+      lastSmsError = 'BLE device not connected. Cannot send SMS.';
+      notifyListeners();
+      return false;
+    }
+
     _smsSending = true;
     lastSmsError = null;
     notifyListeners();
@@ -668,6 +932,7 @@ class AppState extends ChangeNotifier {
       fallTime: DateTime.now(),
       gpsLocation: lastGpsLocation,
       mapsUrl: lastMapsUrl,
+      requireGps: true,
     );
 
     _smsSending = false;
@@ -686,6 +951,8 @@ class AppState extends ChangeNotifier {
 
   @override
   void dispose() {
+    _alertCountdownTimer?.cancel();
+    _remoteKidsSub?.cancel();
     BleService.dispose();
     super.dispose();
   }

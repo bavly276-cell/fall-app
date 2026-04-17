@@ -9,6 +9,7 @@ import 'screens/startup_clock_screen.dart';
 import 'services/app_state.dart';
 import 'services/background_service.dart';
 import 'utils/theme.dart';
+import 'widgets/app_lifecycle_service_bridge.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -60,18 +61,25 @@ Future<void> _bootstrapServices(AppState appState) async {
 class FallDetectionApp extends StatelessWidget {
   const FallDetectionApp({super.key});
 
+  static final ThemeData _lightTheme = AppTheme.lightTheme();
+  static final ThemeData _darkTheme = AppTheme.darkTheme();
+
   @override
   Widget build(BuildContext context) {
-    final appState = Provider.of<AppState>(context);
-    return MaterialApp(
-      title: 'SafeWatch Fall Detection',
-      debugShowCheckedModeBanner: false,
-      themeMode: appState.isDarkMode ? ThemeMode.dark : ThemeMode.light,
-      themeAnimationDuration: const Duration(milliseconds: 220),
-      themeAnimationCurve: Curves.easeInOut,
-      theme: AppTheme.lightTheme(),
-      darkTheme: AppTheme.darkTheme(),
-      home: const StartupClockScreen(),
+    return Selector<AppState, bool>(
+      selector: (_, s) => s.isDarkMode,
+      builder: (context, isDarkMode, _) {
+        return MaterialApp(
+          title: 'Safe Brace',
+          debugShowCheckedModeBanner: false,
+          themeMode: isDarkMode ? ThemeMode.dark : ThemeMode.light,
+          themeAnimationDuration: const Duration(milliseconds: 220),
+          themeAnimationCurve: Curves.easeInOut,
+          theme: _lightTheme,
+          darkTheme: _darkTheme,
+          home: const AppLifecycleServiceBridge(child: StartupClockScreen()),
+        );
+      },
     );
   }
 }

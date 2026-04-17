@@ -6,7 +6,6 @@ import '../screens/device_scan_screen.dart';
 import '../screens/history_screen.dart';
 import '../screens/home_screen.dart';
 import '../screens/profile_screen.dart';
-import '../screens/wifi_device_scan_screen.dart';
 
 class AppBottomNav extends StatelessWidget {
   const AppBottomNav({super.key, required this.currentIndex});
@@ -17,9 +16,6 @@ class AppBottomNav extends StatelessWidget {
   Widget build(BuildContext context) {
     final isBleConnected = context.select<AppState, bool>(
       (s) => s.isBleConnected,
-    );
-    final wifiConnected = context.select<AppState, bool>(
-      (s) => s.wifiConnected,
     );
 
     return NavigationBar(
@@ -47,19 +43,6 @@ class AppBottomNav extends StatelessWidget {
           ),
           label: 'Devices',
         ),
-        NavigationDestination(
-          icon: Badge(
-            isLabelVisible: wifiConnected,
-            backgroundColor: Colors.teal,
-            child: const Icon(Icons.wifi_rounded),
-          ),
-          selectedIcon: Badge(
-            isLabelVisible: wifiConnected,
-            backgroundColor: Colors.teal,
-            child: const Icon(Icons.wifi_rounded),
-          ),
-          label: 'WiFi',
-        ),
         const NavigationDestination(
           icon: Icon(Icons.history_rounded),
           selectedIcon: Icon(Icons.history_rounded),
@@ -85,10 +68,9 @@ class AppBottomNav extends StatelessWidget {
     final page = switch (index) {
       0 => const HomeScreen(),
       1 => const DeviceScanScreen(),
-      2 => const WifiDeviceScanScreen(),
-      3 => const HistoryScreen(),
-      4 => const ChatScreen(),
-      5 => const ProfileScreen(),
+      2 => const HistoryScreen(),
+      3 => const ChatScreen(),
+      4 => const ProfileScreen(),
       _ => const HomeScreen(),
     };
 

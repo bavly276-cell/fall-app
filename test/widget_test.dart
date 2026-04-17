@@ -11,6 +11,6 @@ void main() {
         child: const FallDetectionApp(),
       ),
     );
-    expect(find.text('Fall Detection System'), findsOneWidget);
+    expect(find.text('ECU'), findsOneWidget);
   });
 }

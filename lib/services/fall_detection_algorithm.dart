@@ -1,4 +1,3 @@
-import 'dart:collection';
 import 'package:flutter/foundation.dart';
 
 /// Parsed sensor data from the Arduino BLE stream.
@@ -7,6 +6,7 @@ class SensorData {
   final double spo2;
   final double tiltAngle;
   final double accelMag;
+  final double? gyroMag;
   final int battery;
   final bool fallFlag;
   final bool? wifiConnected;
@@ -16,6 +16,7 @@ class SensorData {
     required this.spo2,
     required this.tiltAngle,
     required this.accelMag,
+    required this.gyroMag,
     required this.battery,
     required this.fallFlag,
     required this.wifiConnected,
@@ -38,6 +39,10 @@ class SensorData {
         spo2: double.tryParse(map['SPO2'] ?? '') ?? 0.0,
         tiltAngle: double.tryParse(map['TILT'] ?? '') ?? 0.0,
         accelMag: double.tryParse(map['ACC'] ?? '') ?? 1.0,
+        // Optional (only if firmware includes it). Accept either GYRO or GMAG.
+        gyroMag:
+            double.tryParse(map['GYRO'] ?? '') ??
+            double.tryParse(map['GMAG'] ?? ''),
         battery: int.tryParse(map['BATT'] ?? '') ?? -1,
         fallFlag: (map['FALL'] ?? '0') == '1',
         wifiConnected: map.containsKey('WIFI')
@@ -54,85 +59,135 @@ class SensorData {
   String toString() =>
       'SensorData(HR:$heartRate, SPO2:${spo2.toStringAsFixed(1)}, '
       'TILT:${tiltAngle.toStringAsFixed(1)}, '
-      'ACC:${accelMag.toStringAsFixed(2)}, BATT:$battery, '
+      'ACC:${accelMag.toStringAsFixed(2)}, '
+      'GYRO:${gyroMag?.toStringAsFixed(2) ?? "-"}, '
+      'BATT:$battery, '
       'FALL:$fallFlag, WIFI:${wifiConnected ?? "?"})';
 }
 
 /// Phone-side fall detection algorithm that mirrors & supplements
-/// the Arduino's 3-stage detection as a redundant safety layer.
+/// the firmware using a 5-state FSM:
+/// NORMAL → FREE_FALL → IMPACT → STILLNESS_CHECK → ALERT
 ///
-/// Uses a sliding window of recent acceleration readings to detect:
-///   1. Freefall phase (|a| < 0.4g)
-///   2. Impact phase (|a| > 3.0g)
-///   3. Post-impact orientation (tilt > 60°)
-///   4. Heart rate stress confirmation (HR > 100 BPM)
+/// Uses SVM thresholds (in g) from the report:
+/// - Freefall: < 0.5g
+/// - Impact:   > 2.5g
+///
+/// Gyro magnitude confirmation is applied only if `gyroMag` is present.
 class FallDetectionAlgorithm {
-  // Thresholds (matching Arduino)
-  static const double impactThreshold = 3.0;
-  static const double freefallThreshold = 0.4;
-  static const double angleThreshold = 60.0;
-  static const int hrStressThreshold = 100;
+  static const double thFreefallG = 0.5;
+  static const double thImpactG = 2.5;
+
+  // Direct transition possible for high-energy falls (report)
+  static const double thImpactDirectG = 3.0;
+
+  // Free-fall must persist >0.5s (report)
+  static const Duration freefallRequired = Duration(milliseconds: 500);
+
+  // 2s stillness requirement (report) — gyro magnitude < 50 deg/s
+  static const Duration stillnessRequired = Duration(seconds: 2);
+  static const double stillAccelMinG = 0.80;
+  static const double stillAccelMaxG = 1.20;
+  // 50 deg/s = 0.8726646 rad/s
+  static const double stillGyroMax = 0.8726646;
+
+  static const Duration freefallToImpactWindow = Duration(milliseconds: 800);
+  static const Duration impactConfirmWindow = Duration(milliseconds: 600);
+  static const Duration stillnessTimeout = Duration(seconds: 5);
   static const Duration debounceDuration = Duration(seconds: 5);
-  static const Duration freefallWindow = Duration(milliseconds: 500);
-  static const Duration postImpactWindow = Duration(seconds: 1);
 
-  final _accelHistory = ListQueue<_AccelSample>(maxSize);
-  static const int maxSize = 50;
+  _FsmState _state = _FsmState.normal;
+  DateTime? _freefallCandidateAt;
+  DateTime? _freefallAt;
+  DateTime? _impactAt;
+  DateTime? _stillnessAt;
+  DateTime? _lastTriggerAt;
 
-  _FallPhase _phase = _FallPhase.idle;
-  DateTime? _impactTime;
-  DateTime? _lastFallTime;
-
-  /// Process a new sensor reading. Returns true if a fall is detected.
   bool processSensorData(SensorData data) {
     final now = DateTime.now();
 
-    // Arduino already detected a fall — trust it immediately
+    // If firmware already flagged a fall, treat it as ALERT.
     if (data.fallFlag) {
       if (_canTrigger(now)) {
-        _lastFallTime = now;
-        _phase = _FallPhase.idle;
-        debugPrint('FallAlgo: Arduino-side fall confirmed');
+        _lastTriggerAt = now;
+        _state = _FsmState.normal;
         return true;
       }
       return false;
     }
 
-    // Record acceleration history
-    _accelHistory.addLast(_AccelSample(data.accelMag, now));
-    while (_accelHistory.length > maxSize) {
-      _accelHistory.removeFirst();
-    }
+    switch (_state) {
+      case _FsmState.normal:
+        // Direct impact for high-energy falls
+        if (data.accelMag > thImpactDirectG) {
+          _state = _FsmState.stillnessCheck;
+          _impactAt = now;
+          _stillnessAt = null;
+          break;
+        }
 
-    switch (_phase) {
-      case _FallPhase.idle:
-        // Detect high-g impact
-        if (data.accelMag > impactThreshold) {
-          if (_hadFreefallRecently(now)) {
-            _phase = _FallPhase.impactDetected;
-            _impactTime = now;
-            debugPrint('FallAlgo: Impact after freefall detected');
+        // Free-fall requires sustained low SVM >0.5s
+        if (data.accelMag < thFreefallG) {
+          _freefallCandidateAt ??= now;
+          if (now.difference(_freefallCandidateAt!) >= freefallRequired) {
+            _state = _FsmState.freeFall;
+            _freefallAt = _freefallCandidateAt;
           }
+        } else {
+          _freefallCandidateAt = null;
         }
         break;
 
-      case _FallPhase.impactDetected:
-        if (_impactTime != null &&
-            now.difference(_impactTime!) < postImpactWindow) {
-          // Check if person is lying down
-          if (data.tiltAngle > angleThreshold) {
-            final hrConfirms =
-                data.heartRate == 0 || data.heartRate > hrStressThreshold;
-            if (hrConfirms && _canTrigger(now)) {
-              _lastFallTime = now;
-              _phase = _FallPhase.idle;
-              debugPrint('FallAlgo: Phone-side fall CONFIRMED');
+      case _FsmState.freeFall:
+        if (_freefallAt == null ||
+            now.difference(_freefallAt!) > freefallToImpactWindow) {
+          _resetToNormal();
+          break;
+        }
+        if (data.accelMag > thImpactG) {
+          // Impact detected
+          _state = _FsmState.impact;
+          _impactAt = now;
+        }
+        break;
+
+      case _FsmState.impact:
+        // Transition immediately to STILLNESS_CHECK after impact.
+        _state = _FsmState.stillnessCheck;
+        _stillnessAt = null;
+        break;
+
+      case _FsmState.stillnessCheck:
+        if (_impactAt == null ||
+            now.difference(_impactAt!) > stillnessTimeout) {
+          // Timer expired -> still trigger alert (report)
+          if (_canTrigger(now)) {
+            _lastTriggerAt = now;
+            _resetToNormal();
+            return true;
+          }
+          _resetToNormal();
+          break;
+        }
+
+        final stillAccel =
+            data.accelMag >= stillAccelMinG && data.accelMag <= stillAccelMaxG;
+        final gyro = data.gyroMag;
+        final stillGyro = gyro == null ? true : gyro <= stillGyroMax;
+        final still = stillAccel && stillGyro;
+
+        if (still) {
+          _stillnessAt ??= now;
+          if (now.difference(_stillnessAt!) >= stillnessRequired) {
+            if (_canTrigger(now)) {
+              _lastTriggerAt = now;
+              _resetToNormal();
               return true;
             }
+            _resetToNormal();
           }
         } else {
-          // Timeout — person recovered
-          _phase = _FallPhase.idle;
+          _stillnessAt = null;
         }
         break;
     }
@@ -141,35 +196,19 @@ class FallDetectionAlgorithm {
   }
 
   bool _canTrigger(DateTime now) {
-    if (_lastFallTime == null) return true;
-    return now.difference(_lastFallTime!) > debounceDuration;
+    if (_lastTriggerAt == null) return true;
+    return now.difference(_lastTriggerAt!) >= debounceDuration;
   }
 
-  bool _hadFreefallRecently(DateTime now) {
-    for (final sample in _accelHistory) {
-      if (now.difference(sample.time) > freefallWindow) continue;
-      if (sample.accel < freefallThreshold) return true;
-    }
-    return false;
+  void _resetToNormal() {
+    _state = _FsmState.normal;
+    _freefallCandidateAt = null;
+    _freefallAt = null;
+    _impactAt = null;
+    _stillnessAt = null;
   }
 
-  void reset() {
-    _phase = _FallPhase.idle;
-    _impactTime = null;
-    _accelHistory.clear();
-  }
+  void reset() => _resetToNormal();
 }
 
-enum _FallPhase { idle, impactDetected }
-
-class _AccelSample {
-  final double accel;
-  final DateTime time;
-  const _AccelSample(this.accel, this.time);
-}
-
-/// Extension to track a limited-size queue.
-extension _ListQueueCapped<T> on ListQueue<T> {
-  // ignore: unused_element
-  static ListQueue<T> capped<T>(int maxSize) => ListQueue<T>(maxSize);
-}
+enum _FsmState { normal, freeFall, impact, stillnessCheck }

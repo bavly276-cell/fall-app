@@ -1,6 +1,6 @@
 import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:permission_handler/permission_handler.dart';
+import 'permission_manager.dart';
 
 /// GPS location service for embedding coordinates in fall alerts.
 class LocationService {
@@ -13,8 +13,7 @@ class LocationService {
 
   /// Request location permissions. Returns true if granted.
   static Future<bool> requestPermission() async {
-    final status = await Permission.locationWhenInUse.request();
-    return status.isGranted || status.isLimited;
+    return PermissionManager.requestLocationPermission();
   }
 
   /// Check if location services are enabled on the device.

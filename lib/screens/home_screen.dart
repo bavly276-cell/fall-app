@@ -1,13 +1,18 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../services/app_state.dart';
 import '../services/permission_manager.dart';
+import '../services/ble_service.dart';
+import '../services/firestore_service.dart';
 import '../widgets/alert_card.dart';
 import '../widgets/heart_rate_widget.dart';
 import '../widgets/device_status_widget.dart';
 import '../widgets/app_bottom_nav.dart';
 import 'device_scan_screen.dart';
-import 'wifi_device_scan_screen.dart';
+import 'kids_tracking_screen.dart';
+import 'medical_analytics_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -21,7 +26,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   late final List<Animation<double>> _fadeAnims;
   late final List<Animation<Offset>> _slideAnims;
 
-  static const int _itemCount = 7;
+  static const int _itemCount = 9;
 
   @override
   void initState() {
@@ -55,7 +60,28 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     });
 
     _staggerController.forward();
-    PermissionManager.requestAllPermissions();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(() async {
+        await PermissionManager.requestAllPermissions();
+
+        // Best-effort: auto-connect to last known ESP32 on app open.
+        // Run after permission prompts to avoid overlapping permission requests.
+        if (!mounted) return;
+        await context.read<AppState>().tryAutoConnectToLastDevice();
+
+        // Setup GPS callback for kids mode (NEW)
+        if (!mounted) return;
+        final appState = context.read<AppState>();
+        BleService.setGpsDataCallback((lat, lon, valid) {
+          appState.updateKidsGpsLocation(lat, lon, valid);
+
+          // Auto-save to Firebase if kids mode enabled
+          if (valid && lat != null && lon != null && appState.kidsModeEnabled) {
+            FirestoreService.saveKidsLocation(latitude: lat, longitude: lon);
+          }
+        });
+      }());
+    });
   }
 
   @override
@@ -65,6 +91,11 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   }
 
   Widget _animatedItem(int index, Widget child) {
+    if (index < 0 ||
+        index >= _fadeAnims.length ||
+        index >= _slideAnims.length) {
+      return child;
+    }
     return FadeTransition(
       opacity: _fadeAnims[index],
       child: SlideTransition(position: _slideAnims[index], child: child),
@@ -81,9 +112,6 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     );
     final isBleReconnecting = context.select<AppState, bool>(
       (s) => s.isBleReconnecting,
-    );
-    final wifiConnected = context.select<AppState, bool>(
-      (s) => s.wifiConnected,
     );
     final confirmedFalls = context.select<AppState, int>(
       (s) => s.fallHistory.where((e) => e.status == 'CONFIRMED').length,
@@ -102,7 +130,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     return Scaffold(
       appBar: AppBar(
         title: const Text(
-          'SafeWatch',
+          'Safe Brace',
           style: TextStyle(fontWeight: FontWeight.w700, fontSize: 20),
         ),
         actions: [
@@ -160,7 +188,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            'SafeWatch Command',
+                            'Safe Brace',
                             style: TextStyle(
                               color: Colors.white,
                               fontWeight: FontWeight.bold,
@@ -281,37 +309,280 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                 ),
               ),
 
-            // Connect WiFi Device Button (separate from BLE flow)
-            if (!wifiConnected)
-              _animatedItem(
-                2,
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 20),
-                  child: Material(
-                    color: Colors.transparent,
-                    child: InkWell(
-                      borderRadius: BorderRadius.circular(20),
-                      onTap: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => const WifiDeviceScanScreen(),
+            // Device status
+            _animatedItem(
+              2,
+              const Padding(
+                padding: EdgeInsets.only(bottom: 16),
+                child: DeviceStatusWidget(),
+              ),
+            ),
+
+            // Heart rate
+            _animatedItem(
+              3,
+              const Padding(
+                padding: EdgeInsets.only(bottom: 16),
+                child: HeartRateWidget(),
+              ),
+            ),
+
+            // AI Brain Status (NEW)
+            _animatedItem(
+              4,
+              Padding(
+                padding: const EdgeInsets.only(bottom: 16),
+                child: Consumer<AppState>(
+                  builder: (context, appState, _) {
+                    final prob = appState.aiFallProbability;
+                    final label = appState.aiLabel;
+                    Color color;
+                    if (prob > 0.8) {
+                      color = Colors.red;
+                    } else if (prob > 0.5) {
+                      color = Colors.orange;
+                    } else {
+                      color = Colors.blue;
+                    }
+
+                    return Card(
+                      elevation: 1,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(18),
+                      ),
+                      child: Container(
+                        padding: const EdgeInsets.all(16),
+                        child: Row(
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.all(12),
+                              decoration: BoxDecoration(
+                                color: color.withAlpha(30),
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: Icon(
+                                Icons.psychology_rounded,
+                                color: color,
+                                size: 28,
+                              ),
+                            ),
+                            const SizedBox(width: 16),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    children: [
+                                      Text(
+                                        'SafeWatch AI Brain',
+                                        style: TextStyle(
+                                          fontSize: 15,
+                                          fontWeight: FontWeight.bold,
+                                          color: theme.colorScheme.onSurface,
+                                        ),
+                                      ),
+                                      const Spacer(),
+                                      Text(
+                                        '${(prob * 100).toStringAsFixed(0)}%',
+                                        style: TextStyle(
+                                          fontWeight: FontWeight.bold,
+                                          color: color,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 8),
+                                  ClipRRect(
+                                    borderRadius: BorderRadius.circular(4),
+                                    child: LinearProgressIndicator(
+                                      value: prob,
+                                      backgroundColor: color.withAlpha(30),
+                                      valueColor: AlwaysStoppedAnimation<Color>(
+                                        color,
+                                      ),
+                                      minHeight: 6,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 8),
+                                  Text(
+                                    label,
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      color: theme.colorScheme.onSurfaceVariant,
+                                      fontStyle: FontStyle.italic,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
                         ),
                       ),
-                      child: AnimatedContainer(
-                        duration: const Duration(milliseconds: 300),
-                        width: double.infinity,
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 20,
-                          vertical: 24,
+                    );
+                  },
+                ),
+              ),
+            ),
+
+            // Kids Mode Card (NEW)
+            _animatedItem(
+              5,
+              Padding(
+                padding: const EdgeInsets.only(bottom: 16),
+                child: Consumer<AppState>(
+                  builder: (context, appState, _) {
+                    final kidsModeOn = appState.kidsModeEnabled;
+                    return Material(
+                      color: Colors.transparent,
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(18),
+                        onTap: kidsModeOn
+                            ? () => Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (_) => const KidsTrackingScreen(),
+                                ),
+                              )
+                            : null,
+                        child: Card(
+                          elevation: 1,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(18),
+                          ),
+                          child: Container(
+                            padding: const EdgeInsets.all(16),
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(18),
+                              gradient: kidsModeOn
+                                  ? LinearGradient(
+                                      colors: [
+                                        Colors.purple.withOpacity(0.1),
+                                        Colors.pink.withOpacity(0.05),
+                                      ],
+                                      begin: Alignment.topLeft,
+                                      end: Alignment.bottomRight,
+                                    )
+                                  : null,
+                            ),
+                            child: Row(
+                              children: [
+                                Container(
+                                  padding: const EdgeInsets.all(12),
+                                  decoration: BoxDecoration(
+                                    color: kidsModeOn
+                                        ? Colors.purple.withAlpha(40)
+                                        : Colors.grey.withAlpha(20),
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                  child: Icon(
+                                    Icons.location_history,
+                                    color: kidsModeOn
+                                        ? Colors.purple
+                                        : Colors.grey,
+                                    size: 28,
+                                  ),
+                                ),
+                                const SizedBox(width: 16),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        'Kids Mode',
+                                        style: TextStyle(
+                                          fontSize: 16,
+                                          fontWeight: FontWeight.bold,
+                                          color: theme.colorScheme.onSurface,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 4),
+                                      Text(
+                                        kidsModeOn
+                                            ? 'Live GPS tracking enabled'
+                                            : 'Enable to track location',
+                                        style: TextStyle(
+                                          fontSize: 12,
+                                          color: theme
+                                              .colorScheme
+                                              .onSurfaceVariant,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                Switch(
+                                  value: kidsModeOn,
+                                  onChanged: (val) {
+                                    if (val) {
+                                      appState.enableKidsMode();
+                                      // Request GPS subscription
+                                      if (BleService.isConnected) {
+                                        BleService.subscribeGpsData(
+                                          onGpsData: (lat, lon, valid) {
+                                            appState.updateKidsGpsLocation(
+                                              lat,
+                                              lon,
+                                              valid,
+                                            );
+                                            if (valid &&
+                                                lat != null &&
+                                                lon != null) {
+                                              FirestoreService.saveKidsLocation(
+                                                latitude: lat,
+                                                longitude: lon,
+                                              );
+                                            }
+                                          },
+                                        );
+                                      }
+                                    } else {
+                                      appState.disableKidsMode();
+                                    }
+                                  },
+                                ),
+                              ],
+                            ),
+                          ),
                         ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ),
+
+            // Medical Analytics Card (NEW)
+            _animatedItem(
+              6,
+              Padding(
+                padding: const EdgeInsets.only(bottom: 16),
+                child: Material(
+                  color: Colors.transparent,
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(16),
+                    onTap: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => const MedicalAnalyticsScreen(),
+                      ),
+                    ),
+                    child: Card(
+                      elevation: 1,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(16),
+                      ),
+                      child: Container(
+                        padding: const EdgeInsets.all(16),
                         decoration: BoxDecoration(
-                          color: isDark
-                              ? theme.colorScheme.surfaceContainerHigh
-                              : theme.colorScheme.surfaceContainerLow,
-                          borderRadius: BorderRadius.circular(20),
-                          border: Border.all(
-                            color: theme.colorScheme.outline.withAlpha(120),
-                            width: 1.5,
+                          borderRadius: BorderRadius.circular(16),
+                          gradient: LinearGradient(
+                            colors: [
+                              Colors.teal.withOpacity(0.1),
+                              Colors.cyan.withOpacity(0.05),
+                            ],
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
                           ),
                         ),
                         child: Row(
@@ -319,11 +590,11 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                             Container(
                               padding: const EdgeInsets.all(12),
                               decoration: BoxDecoration(
-                                color: Colors.teal.withAlpha(24),
-                                borderRadius: BorderRadius.circular(14),
+                                color: Colors.teal.withAlpha(40),
+                                borderRadius: BorderRadius.circular(12),
                               ),
                               child: const Icon(
-                                Icons.wifi_find_rounded,
+                                Icons.analytics_rounded,
                                 color: Colors.teal,
                                 size: 28,
                               ),
@@ -334,18 +605,18 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
                                   Text(
-                                    'Connect WiFi Device',
+                                    'Medical Analytics',
                                     style: TextStyle(
                                       fontSize: 16,
-                                      fontWeight: FontWeight.w700,
+                                      fontWeight: FontWeight.bold,
                                       color: theme.colorScheme.onSurface,
                                     ),
                                   ),
                                   const SizedBox(height: 4),
                                   Text(
-                                    'Tap to auto-scan WiFi and add your network',
+                                    'Risk analysis & health trends',
                                     style: TextStyle(
-                                      fontSize: 13,
+                                      fontSize: 12,
                                       color: theme.colorScheme.onSurfaceVariant,
                                     ),
                                   ),
@@ -364,28 +635,11 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                   ),
                 ),
               ),
-
-            // Device status
-            _animatedItem(
-              3,
-              const Padding(
-                padding: EdgeInsets.only(bottom: 16),
-                child: DeviceStatusWidget(),
-              ),
-            ),
-
-            // Heart rate
-            _animatedItem(
-              4,
-              const Padding(
-                padding: EdgeInsets.only(bottom: 16),
-                child: HeartRateWidget(),
-              ),
             ),
 
             // Stats row
             _animatedItem(
-              5,
+              7,
               Padding(
                 padding: const EdgeInsets.only(bottom: 20),
                 child: Row(
@@ -416,7 +670,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
 
             // Simulate button
             _animatedItem(
-              6,
+              8,
               SizedBox(
                 width: double.infinity,
                 child: ElevatedButton.icon(

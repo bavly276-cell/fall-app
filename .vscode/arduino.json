@@ -1,0 +1,8 @@
+{
+  "board": "esp32:esp32:esp32c3",
+  "configuration": "CDCOnBoot=default,FlashMode=qio,FlashFreq=80,FlashSize=4M,UploadSpeed=921600,LoopCore=1,EventsCore=1,DebugLevel=none",
+  "programmer": "esptool",
+  "sketch": "arduino/fall_detection_esp32.ino",
+  "port": "COM3",
+  "output": "./build"
+}

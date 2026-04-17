@@ -57,9 +57,9 @@ class HeartRateWidget extends StatelessWidget {
                   const SizedBox(height: 2),
                   Text(
                     hasData
-                        ? 'Heart Rate (MAX30102)'
+                        ? 'Live Vitals Monitoring'
                         : state.isBleConnected
-                        ? 'Waiting for heart rate data...'
+                        ? 'Waiting for sensor telemetry...'
                         : 'Connect device to monitor',
                     style: TextStyle(
                       fontSize: 12,

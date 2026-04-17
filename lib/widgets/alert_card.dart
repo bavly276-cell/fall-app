@@ -11,6 +11,10 @@ class AlertCard extends StatelessWidget {
     final theme = Theme.of(context);
     if (!state.alertActive) return const SizedBox.shrink();
 
+    final secondsLeft = context.select<AppState, int>(
+      (s) => s.alertSecondsRemaining,
+    );
+
     return Card(
       color: theme.colorScheme.errorContainer,
       elevation: 0,
@@ -79,11 +83,13 @@ class AlertCard extends StatelessWidget {
                 ],
               ),
             ),
-            if (state.smsAlertEnabled && state.autoSmsOnConfirm)
+            if (secondsLeft > 0)
               Padding(
-                padding: EdgeInsets.only(top: 4),
+                padding: const EdgeInsets.only(top: 6),
                 child: Text(
-                  'SMS with GPS will be sent automatically on confirm',
+                  (state.smsAlertEnabled && state.autoSmsOnConfirm)
+                      ? 'Auto-SMS will be sent in ${secondsLeft}s unless cancelled'
+                      : 'Auto-confirming in ${secondsLeft}s unless cancelled',
                   style: TextStyle(
                     color: theme.colorScheme.onErrorContainer.withAlpha(170),
                     fontSize: 11,

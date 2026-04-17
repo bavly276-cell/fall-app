@@ -71,15 +71,16 @@ class _PatientOnboardingScreenState extends State<PatientOnboardingScreen> {
     return Scaffold(
       appBar: AppBar(title: const Text('Patient Setup')),
       body: SafeArea(
-        child: Padding(
+        child: SingleChildScrollView(
           padding: const EdgeInsets.all(16),
+          keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
           child: Form(
             key: _formKey,
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'Welcome to SafeWatch',
+                  'Welcome to Safe Brace',
                   style: theme.textTheme.titleLarge?.copyWith(
                     fontWeight: FontWeight.bold,
                   ),
@@ -197,7 +198,7 @@ class _PatientOnboardingScreenState extends State<PatientOnboardingScreen> {
                     return null;
                   },
                 ),
-                const Spacer(),
+                const SizedBox(height: 28),
                 SizedBox(
                   width: double.infinity,
                   child: FilledButton.icon(

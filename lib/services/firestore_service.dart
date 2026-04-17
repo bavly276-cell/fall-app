@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/foundation.dart';
 import '../models/fall_event.dart';
 
@@ -9,7 +10,12 @@ import '../models/fall_event.dart';
 ///     profile: { patientName, caregiverName, caregiverPhone, ... }
 ///     fall_events/{eventId}: { time, heartRate, tiltAngle, accelMag, status, gps }
 class FirestoreService {
-  static FirebaseFirestore get _db => FirebaseFirestore.instance;
+  static FirebaseFirestore get _db {
+    if (Firebase.apps.isEmpty) {
+      throw StateError('Firebase has not been initialized. Call Firebase.initializeApp() first.');
+    }
+    return FirebaseFirestore.instance;
+  }
 
   static void _logFirestoreError(String scope, Object error) {
     final msg = error.toString();
@@ -43,6 +49,9 @@ class FirestoreService {
 
   static CollectionReference get _chatCol =>
       _userDoc.collection('chat_messages');
+
+  static CollectionReference get _kidsLocationsCol =>
+      _userDoc.collection('kids_locations'); // NEW kids mode GPS
 
   // ── Fall Events ──
 
@@ -207,6 +216,68 @@ class FirestoreService {
       });
     } catch (e) {
       _logFirestoreError('saveChatMessage', e);
+    }
+  }
+
+  // ── Kids Mode GPS Tracking ── (NEW)
+
+  /// Save a kids mode GPS location point to Firestore.
+  static Future<void> saveKidsLocation({
+    required double latitude,
+    required double longitude,
+  }) async {
+    try {
+      await _kidsLocationsCol.add({
+        'latitude': latitude,
+        'longitude': longitude,
+        'timestamp': FieldValue.serverTimestamp(),
+      });
+    } catch (e) {
+      _logFirestoreError('saveKidsLocation', e);
+    }
+  }
+
+  /// Load kids location history from Firestore (last 500 points).
+  static Future<List<Map<String, dynamic>>> loadKidsLocationHistory() async {
+    try {
+      final snap = await _kidsLocationsCol
+          .orderBy('timestamp', descending: true)
+          .limit(500)
+          .get();
+
+      return snap.docs
+          .map((doc) => doc.data() as Map<String, dynamic>)
+          .toList();
+    } catch (e) {
+      _logFirestoreError('loadKidsLocationHistory', e);
+      return [];
+    }
+  }
+
+  /// Stream kids location history in real-time.
+  static Stream<List<Map<String, dynamic>>> kidsLocationStream() {
+    return _kidsLocationsCol
+        .orderBy('timestamp', descending: true)
+        .limit(500)
+        .snapshots()
+        .map(
+          (snap) => snap.docs
+              .map((doc) => doc.data() as Map<String, dynamic>)
+              .toList(),
+        );
+  }
+
+  /// Clear all kids location history.
+  static Future<void> clearKidsLocationHistory() async {
+    try {
+      final snap = await _kidsLocationsCol.get();
+      final batch = _db.batch();
+      for (final doc in snap.docs) {
+        batch.delete(doc.reference);
+      }
+      await batch.commit();
+    } catch (e) {
+      _logFirestoreError('clearKidsLocationHistory', e);
     }
   }
 }

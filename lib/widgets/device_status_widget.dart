@@ -1,10 +1,24 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../models/smartwatch_capability_report.dart';
 import '../services/app_state.dart';
 import 'connection_status.dart';
 
 class DeviceStatusWidget extends StatelessWidget {
   const DeviceStatusWidget({super.key});
+
+  Color _supportColor(WatchSupportLevel level) {
+    switch (level) {
+      case WatchSupportLevel.full:
+        return Colors.green;
+      case WatchSupportLevel.partial:
+        return Colors.orange;
+      case WatchSupportLevel.hrOnly:
+        return Colors.blue;
+      case WatchSupportLevel.unsupported:
+        return Colors.red;
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -19,7 +33,7 @@ class DeviceStatusWidget extends StatelessWidget {
       case 'FALL_DETECTED':
         stateColor = theme.colorScheme.tertiary;
         break;
-      case 'MONITORING':
+      case 'Active':
         stateColor = Colors.teal;
         break;
       default:
@@ -86,6 +100,110 @@ class DeviceStatusWidget extends StatelessWidget {
               ),
             ],
 
+            if (state.smartwatchCapabilityReport != null) ...[
+              const SizedBox(height: 14),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.surfaceContainerHighest.withAlpha(
+                    90,
+                  ),
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Watch Capability Probe',
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Chip(
+                      label: Text(
+                        state.smartwatchCapabilityReport!.supportLabel,
+                      ),
+                      backgroundColor: _supportColor(
+                        state.smartwatchCapabilityReport!.supportLevel,
+                      ).withAlpha(28),
+                      side: BorderSide(
+                        color: _supportColor(
+                          state.smartwatchCapabilityReport!.supportLevel,
+                        ).withAlpha(90),
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      state.smartwatchCapabilityReport!.summary,
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      state.smartwatchCapabilityReport!.recommendation,
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        ...state.smartwatchCapabilityReport!.supportedMetrics
+                            .map(
+                              (metric) => Chip(
+                                label: Text(metric),
+                                visualDensity: VisualDensity.compact,
+                              ),
+                            ),
+                        if (state.smartwatchCapabilityReport!.supportsHeartRate)
+                           const Chip(
+                            label: Text('Vital HR'),
+                            avatar: Icon(Icons.favorite, size: 14, color: Colors.red),
+                            visualDensity: VisualDensity.compact,
+                          ),
+                        if (state.smartwatchCapabilityReport!.supportsSpO2)
+                           const Chip(
+                            label: Text('Vital SpO2'),
+                            avatar: Icon(Icons.bloodtype, size: 14, color: Colors.blue),
+                            visualDensity: VisualDensity.compact,
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                    Text(
+                      'Services: ${state.smartwatchCapabilityReport!.serviceUuids.length} | Characteristics: ${state.smartwatchCapabilityReport!.characteristicUuids.length}',
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      state.smartwatchCapabilityReport!.serviceUuids.isEmpty
+                          ? 'No GATT services discovered'
+                          : state.smartwatchCapabilityReport!.serviceUuids
+                                .take(4)
+                                .join(' • '),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 10,
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+
             // Reconnecting indicator
             if (state.isBleReconnecting) ...[
               const SizedBox(height: 14),
@@ -138,12 +256,6 @@ class DeviceStatusWidget extends StatelessWidget {
                   Icons.bluetooth_rounded,
                   state.isBleConnected ? 'Live' : 'No Device',
                   state.isBleConnected ? Colors.blue : Colors.grey,
-                  theme,
-                ),
-                _statusItem(
-                  Icons.wifi_rounded,
-                  state.wifiConnected ? 'Connected' : 'Offline',
-                  state.wifiConnected ? Colors.teal : Colors.grey,
                   theme,
                 ),
               ],

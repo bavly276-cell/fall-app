@@ -53,6 +53,18 @@ class AppConstants {
   static const String prefOnboardingComplete = 'onboarding_complete';
   static const String prefFallHistory = 'fall_history';
 
+  // Last known BLE device
+  static const String prefLastBleDeviceId = 'last_ble_device_id';
+  static const String prefLastBleDeviceName = 'last_ble_device_name';
+
+  // Last saved sensor snapshot (restore on app open)
+  static const String prefLastSensorHr = 'last_sensor_hr';
+  static const String prefLastSensorSpo2 = 'last_sensor_spo2';
+  static const String prefLastSensorTilt = 'last_sensor_tilt';
+  static const String prefLastSensorAcc = 'last_sensor_acc';
+  static const String prefLastSensorBatt = 'last_sensor_batt';
+  static const String prefLastSensorAtMs = 'last_sensor_at_ms';
+
   // Hardware Info
   static const String mcuName = 'ESP32-C3 Super Mini';
   static const String wifiModule = 'ESP32-C3 WiFi (built-in)';

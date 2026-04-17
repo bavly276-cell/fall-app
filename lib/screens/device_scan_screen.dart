@@ -6,7 +6,6 @@ import '../models/ble_device.dart';
 import '../services/ble_service.dart';
 import '../services/app_state.dart';
 import '../widgets/app_bottom_nav.dart';
-import 'wifi_device_scan_screen.dart';
 
 class DeviceScanScreen extends StatefulWidget {
   const DeviceScanScreen({super.key});
@@ -148,16 +147,6 @@ class _DeviceScanScreenState extends State<DeviceScanScreen>
       appBar: AppBar(
         title: const Text('Bluetooth Devices'),
         actions: [
-          IconButton(
-            tooltip: 'WiFi Devices',
-            icon: const Icon(Icons.wifi_rounded),
-            onPressed: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => const WifiDeviceScanScreen()),
-              );
-            },
-          ),
           if (_isScanning)
             const Padding(
               padding: EdgeInsets.only(right: 16),

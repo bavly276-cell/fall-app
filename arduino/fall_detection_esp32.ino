@@ -249,14 +249,14 @@ class WifiConfigCallbacks : public BLECharacteristicCallbacks {
 };
 
 bool initImu() {
-  if (!mpu.begin(0x68, &Wire)) {
-    Serial.println("MPU6050 not found");
+  if (!mpu.begin()) {
+    Serial.println("MPU6050 not found at default address 0x68");
     return false;
   }
-  mpu.setAccelerometerRange(MPU6050_RANGE_8_G);
+  mpu.setAccelerometerRange(MPU6050_RANGE_16_G);
   mpu.setGyroRange(MPU6050_RANGE_500_DEG);
   mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
-  Serial.println("MPU6050 initialized");
+  Serial.println("MPU6050 initialized successfully");
   return true;
 }
 

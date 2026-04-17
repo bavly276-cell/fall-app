@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -16,6 +17,7 @@ class _StartupClockScreenState extends State<StartupClockScreen>
     with TickerProviderStateMixin {
   late final AnimationController _logoController;
   late final AnimationController _introController;
+  Timer? _routeTimer;
 
   @override
   void initState() {
@@ -31,7 +33,7 @@ class _StartupClockScreenState extends State<StartupClockScreen>
       duration: const Duration(milliseconds: 600),
     )..forward();
 
-    Future<void>.delayed(const Duration(milliseconds: 1200), () {
+    _routeTimer = Timer(const Duration(milliseconds: 1200), () {
       if (!mounted) return;
       final appState = Provider.of<AppState>(context, listen: false);
       final firstRun =
@@ -57,6 +59,7 @@ class _StartupClockScreenState extends State<StartupClockScreen>
 
   @override
   void dispose() {
+    _routeTimer?.cancel();
     _logoController.dispose();
     _introController.dispose();
     super.dispose();
@@ -161,7 +164,7 @@ class _StartupClockScreenState extends State<StartupClockScreen>
                               width: 94,
                               height: 94,
                               decoration: BoxDecoration(
-                                color: theme.colorScheme.surfaceContainerLowest,
+                                color: theme.colorScheme.surface,
                                 borderRadius: BorderRadius.circular(30),
                                 border: Border.all(
                                   color: theme.colorScheme.primary.withAlpha(
@@ -189,7 +192,7 @@ class _StartupClockScreenState extends State<StartupClockScreen>
                                           minHeight: 5,
                                           backgroundColor: theme
                                               .colorScheme
-                                              .surfaceContainerHigh,
+                                              .surfaceContainerHighest,
                                           valueColor:
                                               AlwaysStoppedAnimation<Color>(
                                                 theme.colorScheme.primary,
@@ -224,7 +227,9 @@ class _StartupClockScreenState extends State<StartupClockScreen>
 
   Widget _bandLoop(ThemeData theme, {required bool flipped}) {
     final transform = Matrix4.identity();
-    transform.scaleByDouble(flipped ? -1.0 : 1.0, 1.0, 1.0, 1.0);
+    if (flipped) {
+      transform.scale(-1.0, 1.0, 1.0);
+    }
 
     return Transform(
       alignment: Alignment.center,
@@ -240,8 +245,8 @@ class _StartupClockScreenState extends State<StartupClockScreen>
           ),
           gradient: LinearGradient(
             colors: [
-              theme.colorScheme.surfaceContainerHigh,
-              theme.colorScheme.surfaceContainerLow,
+              theme.colorScheme.surfaceContainerHighest,
+              theme.colorScheme.surface,
             ],
           ),
         ),
