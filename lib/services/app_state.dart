@@ -1,17 +1,35 @@
 import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/fall_event.dart';
 import '../models/smartwatch_capability_report.dart';
 import '../utils/constants.dart';
+import 'activity_classifier_service.dart';
 import 'ble_service.dart';
+import 'device_identity_service.dart';
+import 'fcm_service.dart';
 import 'sms_service.dart';
 import 'location_service.dart';
 import 'fall_detection_algorithm.dart';
 import 'firestore_service.dart';
+import 'health_rules_service.dart';
+import 'kids_safety_sync_service.dart';
 import 'medical_analysis_service.dart';
-import 'ai_fall_detector.dart';
+import 'tflite_fall_detection_service.dart';
+
+enum MonitoringRole { child, parent }
+
+extension MonitoringRoleX on MonitoringRole {
+  String get wireValue => this == MonitoringRole.parent ? 'parent' : 'child';
+
+  static MonitoringRole fromWire(String raw) {
+    return raw.toLowerCase() == 'parent'
+        ? MonitoringRole.parent
+        : MonitoringRole.child;
+  }
+}
 
 class AppState extends ChangeNotifier {
   // ── Theme ──
@@ -47,22 +65,52 @@ class AppState extends ChangeNotifier {
 
   // ── Kids Mode ── (NEW)
   bool _kidsModeEnabled = false;
+  MonitoringRole _monitoringRole = MonitoringRole.child;
+  String _linkedParentDeviceId = '';
+  String _linkedChildDeviceId = '';
+  String _deviceId = '';
+
+  double? _safeZoneLat;
+  double? _safeZoneLon;
+  double _safeZoneRadiusMeters = 250.0;
+
   double? _lastKidsLat;
   double? _lastKidsLon;
   bool _kidsModeGpsValid = false;
   DateTime? _lastKidsGpsUpdate;
+  DateTime? _lastKidsPeriodicSyncAt;
+  DateTime? _lastKidsImmediateAlertAt;
+  String _lastActivity = 'unknown';
+  bool _geofenceBreached = false;
+
   List<({double lat, double lon, DateTime timestamp})> _kidsLocationHistory =
       [];
 
   bool get kidsModeEnabled => _kidsModeEnabled;
+  MonitoringRole get monitoringRole => _monitoringRole;
+  String get linkedParentDeviceId => _linkedParentDeviceId;
+  String get linkedChildDeviceId => _linkedChildDeviceId;
+  String get deviceId => _deviceId;
+  double? get safeZoneLat => _safeZoneLat;
+  double? get safeZoneLon => _safeZoneLon;
+  double get safeZoneRadiusMeters => _safeZoneRadiusMeters;
+
   double? get lastKidsLat => _lastKidsLat;
   double? get lastKidsLon => _lastKidsLon;
   bool get kidsModeGpsValid => _kidsModeGpsValid;
   DateTime? get lastKidsGpsUpdate => _lastKidsGpsUpdate;
+  DateTime? get lastKidsPeriodicSyncAt => _lastKidsPeriodicSyncAt;
+  DateTime? get lastKidsImmediateAlertAt => _lastKidsImmediateAlertAt;
+  String get lastActivity => _lastActivity;
+  bool get geofenceBreached => _geofenceBreached;
+
   List<({double lat, double lon, DateTime timestamp})>
   get kidsLocationHistory => _kidsLocationHistory;
-  
+
   StreamSubscription? _remoteKidsSub;
+  StreamSubscription<Position>? _phoneLocationSub;
+  Timer? _kidsPeriodicTimer;
+  DateTime? _lastPhoneLocationCloudSyncAt;
 
   String get caregiverName => _caregiverName;
   String get patientName => _patientName;
@@ -124,15 +172,79 @@ class AppState extends ChangeNotifier {
   // ── Kids Mode Methods ── (NEW)
   void enableKidsMode() {
     _kidsModeEnabled = true;
-    _saveBoolPref('kids_mode_enabled', true);
+    _saveBoolPref(AppConstants.prefKidsModeEnabled, true);
     _kidsLocationHistory = [];
+    unawaited(_startPhoneLocationTracking());
+    _syncMonitoringConfigToCloud();
     notifyListeners();
   }
 
   void disableKidsMode() {
     _kidsModeEnabled = false;
-    _saveBoolPref('kids_mode_enabled', false);
+    _saveBoolPref(AppConstants.prefKidsModeEnabled, false);
     _remoteKidsSub?.cancel();
+    _stopPhoneLocationTracking();
+    _syncMonitoringConfigToCloud();
+    notifyListeners();
+  }
+
+  void setMonitoringRole(MonitoringRole role) {
+    _monitoringRole = role;
+    _saveStringPref(AppConstants.prefMonitoringRole, role.wireValue);
+    if (_monitoringRole == MonitoringRole.child && _kidsModeEnabled) {
+      unawaited(_startPhoneLocationTracking());
+    } else {
+      _stopPhoneLocationTracking();
+    }
+    _syncMonitoringConfigToCloud();
+    notifyListeners();
+  }
+
+  void setLinkedParentDeviceId(String value) {
+    _linkedParentDeviceId = value.trim();
+    _saveStringPref(
+      AppConstants.prefLinkedParentDeviceId,
+      _linkedParentDeviceId,
+    );
+    _syncMonitoringConfigToCloud();
+    notifyListeners();
+  }
+
+  void setLinkedChildDeviceId(String value) {
+    _linkedChildDeviceId = value.trim();
+    _saveStringPref(AppConstants.prefLinkedChildDeviceId, _linkedChildDeviceId);
+    _syncMonitoringConfigToCloud();
+    notifyListeners();
+  }
+
+  Future<void> setSafeZone({
+    required double latitude,
+    required double longitude,
+    double radiusMeters = 250.0,
+  }) async {
+    _safeZoneLat = latitude;
+    _safeZoneLon = longitude;
+    _safeZoneRadiusMeters = radiusMeters;
+
+    await _saveDoublePref(AppConstants.prefSafeZoneLat, latitude);
+    await _saveDoublePref(AppConstants.prefSafeZoneLon, longitude);
+    await _saveDoublePref(AppConstants.prefSafeZoneRadiusMeters, radiusMeters);
+
+    _syncMonitoringConfigToCloud();
+    notifyListeners();
+  }
+
+  Future<void> clearSafeZone() async {
+    _safeZoneLat = null;
+    _safeZoneLon = null;
+
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(AppConstants.prefSafeZoneLat);
+      await prefs.remove(AppConstants.prefSafeZoneLon);
+    } catch (_) {}
+
+    _syncMonitoringConfigToCloud();
     notifyListeners();
   }
 
@@ -151,6 +263,47 @@ class AppState extends ChangeNotifier {
     }
 
     notifyListeners();
+  }
+
+  Future<void> _startPhoneLocationTracking() async {
+    if (!_kidsModeEnabled || _monitoringRole != MonitoringRole.child) return;
+
+    final hasPermission = await LocationService.requestPermission();
+    if (!hasPermission) return;
+
+    await _phoneLocationSub?.cancel();
+
+    const settings = LocationSettings(
+      accuracy: LocationAccuracy.high,
+      distanceFilter: 10,
+    );
+
+    _phoneLocationSub = Geolocator.getPositionStream(locationSettings: settings)
+        .listen((position) {
+          updateKidsGpsLocation(position.latitude, position.longitude, true);
+
+          if (!_firebaseReady || _monitoringRole != MonitoringRole.child) {
+            return;
+          }
+
+          final now = DateTime.now();
+          if (_lastPhoneLocationCloudSyncAt != null &&
+              now.difference(_lastPhoneLocationCloudSyncAt!) <
+                  const Duration(seconds: 20)) {
+            return;
+          }
+
+          _lastPhoneLocationCloudSyncAt = now;
+          FirestoreService.saveKidsLocation(
+            latitude: position.latitude,
+            longitude: position.longitude,
+          );
+        });
+  }
+
+  void _stopPhoneLocationTracking() {
+    _phoneLocationSub?.cancel();
+    _phoneLocationSub = null;
   }
 
   Future<void> setPatientPhotoBase64(String? base64) async {
@@ -218,7 +371,26 @@ class AppState extends ChangeNotifier {
 
   AppState() {
     _initBleCallbacks();
-    _loadLocalPrefs();
+    unawaited(_bootstrapLocalState());
+  }
+
+  Future<void> _bootstrapLocalState() async {
+    await _loadLocalPrefs();
+
+    try {
+      _deviceId = await DeviceIdentityService.getOrCreateDeviceId();
+      FirestoreService.setDeviceId(_deviceId);
+    } catch (_) {}
+
+    try {
+      await TfliteFallDetectionService.instance.initialize();
+    } catch (_) {}
+
+    _startKidsPeriodicSyncTimer();
+    if (_kidsModeEnabled && _monitoringRole == MonitoringRole.child) {
+      unawaited(_startPhoneLocationTracking());
+    }
+    notifyListeners();
   }
 
   Future<void> _loadLocalPrefs() async {
@@ -267,6 +439,25 @@ class AppState extends ChangeNotifier {
       // Restore last known device identity (used for auto-connect)
       lastBleDeviceId = prefs.getString(AppConstants.prefLastBleDeviceId);
       lastBleDeviceName = prefs.getString(AppConstants.prefLastBleDeviceName);
+
+      // Kids safety mode config
+      _kidsModeEnabled =
+          prefs.getBool(AppConstants.prefKidsModeEnabled) ?? _kidsModeEnabled;
+      _monitoringRole = MonitoringRoleX.fromWire(
+        prefs.getString(AppConstants.prefMonitoringRole) ?? 'child',
+      );
+      _linkedParentDeviceId =
+          prefs.getString(AppConstants.prefLinkedParentDeviceId) ??
+          _linkedParentDeviceId;
+      _linkedChildDeviceId =
+          prefs.getString(AppConstants.prefLinkedChildDeviceId) ??
+          _linkedChildDeviceId;
+      _safeZoneLat = prefs.getDouble(AppConstants.prefSafeZoneLat);
+      _safeZoneLon = prefs.getDouble(AppConstants.prefSafeZoneLon);
+      _safeZoneRadiusMeters =
+          prefs.getDouble(AppConstants.prefSafeZoneRadiusMeters) ??
+          _safeZoneRadiusMeters;
+
       notifyListeners();
     } catch (_) {
       // Keep defaults if local storage is unavailable.
@@ -303,7 +494,16 @@ class AppState extends ChangeNotifier {
 
   /// Call after Firebase.initializeApp() completes.
   Future<void> initFirebase() async {
+    if (_deviceId.trim().isEmpty) {
+      _deviceId = await DeviceIdentityService.getOrCreateDeviceId();
+      FirestoreService.setDeviceId(_deviceId);
+    }
+
     _firebaseReady = true;
+
+    try {
+      await FcmService.initialize();
+    } catch (_) {}
 
     // Load profile from cloud
     final profile = await FirestoreService.loadProfile().timeout(
@@ -320,6 +520,23 @@ class AppState extends ChangeNotifier {
       smsAlertEnabled = profile['smsAlertEnabled'] as bool? ?? smsAlertEnabled;
       autoSmsOnConfirm =
           profile['autoSmsOnConfirm'] as bool? ?? autoSmsOnConfirm;
+
+      _monitoringRole = MonitoringRoleX.fromWire(
+        profile['monitoringRole'] as String? ?? _monitoringRole.wireValue,
+      );
+      _linkedParentDeviceId =
+          profile['linkedParentDeviceId'] as String? ?? _linkedParentDeviceId;
+      _linkedChildDeviceId =
+          profile['linkedChildDeviceId'] as String? ?? _linkedChildDeviceId;
+
+      final safeZone = profile['safeZone'];
+      if (safeZone is Map) {
+        final m = Map<String, dynamic>.from(safeZone);
+        _safeZoneLat = (m['lat'] as num?)?.toDouble() ?? _safeZoneLat;
+        _safeZoneLon = (m['lon'] as num?)?.toDouble() ?? _safeZoneLon;
+        _safeZoneRadiusMeters =
+            (m['radius'] as num?)?.toDouble() ?? _safeZoneRadiusMeters;
+      }
     }
 
     // Load fall history from cloud
@@ -330,39 +547,55 @@ class AppState extends ChangeNotifier {
     if (history.isNotEmpty) {
       fallHistory = history;
     }
-    
+
     // Start listening for remote kids mode location updates
     _remoteKidsSub?.cancel();
     _remoteKidsSub = FirestoreService.kidsLocationStream().listen((list) {
       if (!_kidsModeEnabled || list.isEmpty) return;
-      
+
       // If we are NOT connected via BLE, use cloud data for "Remote Tracking"
       if (!BleService.isConnected) {
         final last = list.first;
         final lat = (last['latitude'] as num).toDouble();
         final lon = (last['longitude'] as num).toDouble();
-        final ts = (last['timestamp'] as Timestamp?)?.toDate() ?? DateTime.now();
-        
+        final ts =
+            (last['timestamp'] as Timestamp?)?.toDate() ?? DateTime.now();
+
         // Only update if it's newer than our local data
         if (_lastKidsGpsUpdate == null || ts.isAfter(_lastKidsGpsUpdate!)) {
           _lastKidsLat = lat;
           _lastKidsLon = lon;
           _kidsModeGpsValid = true;
           _lastKidsGpsUpdate = ts;
-          
+
           // Rebuild history from cloud if local is empty
           if (_kidsLocationHistory.isEmpty) {
-            _kidsLocationHistory = list.take(100).map((d) => (
-              lat: (d['latitude'] as num).toDouble(),
-              lon: (d['longitude'] as num).toDouble(),
-              timestamp: (d['timestamp'] as Timestamp?)?.toDate() ?? DateTime.now(),
-            )).toList().reversed.toList();
+            _kidsLocationHistory = list
+                .take(100)
+                .map(
+                  (d) => (
+                    lat: (d['latitude'] as num).toDouble(),
+                    lon: (d['longitude'] as num).toDouble(),
+                    timestamp:
+                        (d['timestamp'] as Timestamp?)?.toDate() ??
+                        DateTime.now(),
+                  ),
+                )
+                .toList()
+                .reversed
+                .toList();
           }
-          
+
           notifyListeners();
         }
       }
     });
+
+    _syncMonitoringConfigToCloud();
+
+    if (_kidsModeEnabled && _monitoringRole == MonitoringRole.child) {
+      unawaited(_startPhoneLocationTracking());
+    }
 
     notifyListeners();
   }
@@ -421,13 +654,6 @@ class AppState extends ChangeNotifier {
           onSpO2: (val) => _handleStandardSpO2(val),
           onTemp: (val) => _handleStandardTemperature(val),
         );
-        
-        // NEW: Fix automatic GPS subscription if kids mode is active
-        if (_kidsModeEnabled) {
-          BleService.subscribeGpsData(
-            onGpsData: (lat, lon, valid) => updateKidsGpsLocation(lat, lon, valid),
-          );
-        }
 
         _monitoring = true;
         deviceState = 'Active';
@@ -528,15 +754,34 @@ class AppState extends ChangeNotifier {
 
     _persistLastSensorSnapshotThrottled();
 
-    // -- REAL AI CLASSIFICATION --
-    final nextProbability = AiFallDetector.predict(
-      accelMag,
-      tiltAngle,
-      heartRate,
-      spo2,
+    // -- Local TFLite fall classification --
+    final tfliteProbability = TfliteFallDetectionService.instance
+        .addSampleAndPredict(accelMag: accelMag, gyroMag: data.gyroMag);
+
+    aiFallProbability =
+        tfliteProbability ??
+        TfliteFallDetectionService.fallbackHeuristic(
+          accelMag: accelMag,
+          tiltAngle: tiltAngle,
+          heartRate: heartRate,
+          spo2: spo2,
+        );
+    aiLabel = TfliteFallDetectionService.probabilityToLabel(aiFallProbability);
+
+    _lastActivity = ActivityClassifierService.classify(
+      accelMag: accelMag,
+      gyroMag: data.gyroMag,
+      heartRate: heartRate,
     );
-    aiFallProbability = nextProbability;
-    aiLabel = AiFallDetector.getLabel(aiFallProbability);
+
+    // Send immediate parent update for danger events (fall or abnormal vitals).
+    unawaited(
+      _handleImmediateKidsSafetyUpdate(
+        triggerType: 'immediate_sensor',
+        fallDetected: data.fallFlag || aiFallProbability > 0.85,
+        gyroMag: data.gyroMag,
+      ),
+    );
 
     final inFalseAlarmCooldown = _isInFalseAlarmCooldown();
 
@@ -584,6 +829,136 @@ class AppState extends ChangeNotifier {
     _saveIntPref(AppConstants.prefLastSensorAtMs, now.millisecondsSinceEpoch);
   }
 
+  void _startKidsPeriodicSyncTimer() {
+    _kidsPeriodicTimer?.cancel();
+    _kidsPeriodicTimer = Timer.periodic(const Duration(minutes: 1), (_) {
+      unawaited(_sendPeriodicKidsSafetyUpdate());
+    });
+  }
+
+  bool _canSyncKidsSafety() {
+    return _firebaseReady &&
+        _kidsModeEnabled &&
+        _monitoringRole == MonitoringRole.child &&
+        _deviceId.trim().isNotEmpty &&
+        _linkedParentDeviceId.trim().isNotEmpty;
+  }
+
+  Future<void> _sendPeriodicKidsSafetyUpdate() async {
+    if (!_canSyncKidsSafety()) return;
+
+    final now = DateTime.now();
+    if (_lastKidsPeriodicSyncAt != null &&
+        now.difference(_lastKidsPeriodicSyncAt!) <
+            KidsSafetySyncService.periodicInterval) {
+      return;
+    }
+
+    final pos = await LocationService.getCurrentPosition();
+    final geofence = KidsSafetySyncService.isGeofenceBreached(
+      position: pos,
+      safeLat: _safeZoneLat,
+      safeLon: _safeZoneLon,
+      safeRadiusMeters: _safeZoneRadiusMeters,
+    );
+
+    _geofenceBreached = geofence;
+
+    final update = KidsSafetySyncService.buildUpdate(
+      childDeviceId: _deviceId,
+      triggerType: 'periodic',
+      heartRate: heartRate,
+      spo2: spo2,
+      accelMag: accelMag,
+      gyroMag: null,
+      fallDetected: alertActive,
+      geofenceBreached: geofence,
+      position: pos,
+    );
+
+    _lastActivity = update.activity;
+    _lastKidsPeriodicSyncAt = now;
+
+    if (pos != null) {
+      updateKidsGpsLocation(pos.latitude, pos.longitude, true);
+      FirestoreService.saveKidsLocation(
+        latitude: pos.latitude,
+        longitude: pos.longitude,
+      );
+    }
+
+    await KidsSafetySyncService.pushUpdate(
+      update: update,
+      parentDeviceId: _linkedParentDeviceId,
+      immediate: geofence,
+    );
+
+    if (geofence) {
+      _lastKidsImmediateAlertAt = now;
+    }
+  }
+
+  Future<void> _handleImmediateKidsSafetyUpdate({
+    required String triggerType,
+    required bool fallDetected,
+    required double? gyroMag,
+  }) async {
+    if (!_canSyncKidsSafety()) return;
+
+    final abnormalHealth = HealthRulesService.isAbnormalVitals(
+      heartRate: heartRate,
+      spo2: spo2,
+    );
+
+    if (!fallDetected && !abnormalHealth) return;
+
+    final now = DateTime.now();
+    if (_lastKidsImmediateAlertAt != null &&
+        now.difference(_lastKidsImmediateAlertAt!) <
+            const Duration(seconds: 45)) {
+      return;
+    }
+
+    final pos = await LocationService.getCurrentPosition();
+    final geofence = KidsSafetySyncService.isGeofenceBreached(
+      position: pos,
+      safeLat: _safeZoneLat,
+      safeLon: _safeZoneLon,
+      safeRadiusMeters: _safeZoneRadiusMeters,
+    );
+
+    _geofenceBreached = geofence;
+
+    final update = KidsSafetySyncService.buildUpdate(
+      childDeviceId: _deviceId,
+      triggerType: triggerType,
+      heartRate: heartRate,
+      spo2: spo2,
+      accelMag: accelMag,
+      gyroMag: gyroMag,
+      fallDetected: fallDetected,
+      geofenceBreached: geofence,
+      position: pos,
+    );
+
+    _lastActivity = update.activity;
+    _lastKidsImmediateAlertAt = now;
+
+    if (pos != null) {
+      updateKidsGpsLocation(pos.latitude, pos.longitude, true);
+      FirestoreService.saveKidsLocation(
+        latitude: pos.latitude,
+        longitude: pos.longitude,
+      );
+    }
+
+    await KidsSafetySyncService.pushUpdate(
+      update: update,
+      parentDeviceId: _linkedParentDeviceId,
+      immediate: true,
+    );
+  }
+
   void _handleStandardHeartRate(int hr) {
     if (hr <= 0) return;
 
@@ -596,7 +971,7 @@ class AppState extends ChangeNotifier {
     if ((hr.toDouble() - heartRate).abs() >= 1.0) {
       heartRate = hr.toDouble();
       lastSensorUpdate = DateTime.now();
-      
+
       // Update medical analysis
       MedicalAnalysisService.addDataPoint(
         MedicalDataPoint(
@@ -608,7 +983,7 @@ class AppState extends ChangeNotifier {
           battery: batteryLevel,
         ),
       );
-      
+
       _notifyUiThrottled();
     }
   }
@@ -639,8 +1014,8 @@ class AppState extends ChangeNotifier {
 
   void _handleStandardTemperature(double val) {
     if (val <= 0) return;
-    
-    // Most smartwatches with temp don't have custom ESP32 streams, 
+
+    // Most smartwatches with temp don't have custom ESP32 streams,
     // but we check anyway.
     final customFresh =
         _lastCustomSensorAt != null &&
@@ -681,12 +1056,29 @@ class AppState extends ChangeNotifier {
       tiltAngle = data[3].toDouble();
       accelMag = data[4] / 10.0;
     }
+
+    unawaited(
+      _handleImmediateKidsSafetyUpdate(
+        triggerType: 'immediate_fall_packet',
+        fallDetected: true,
+        gyroMag: null,
+      ),
+    );
+
     _triggerFallAlert();
   }
 
   void _triggerFallAlert() async {
     alertActive = true;
     deviceState = 'FALL_DETECTED';
+
+    unawaited(
+      _handleImmediateKidsSafetyUpdate(
+        triggerType: 'immediate_fall_alert',
+        fallDetected: true,
+        gyroMag: null,
+      ),
+    );
 
     // Start/reset the 20-second cancellation window.
     _startAlertCountdown();
@@ -768,7 +1160,6 @@ class AppState extends ChangeNotifier {
     batteryLevel = battery;
     notifyListeners();
   }
-
 
   // ── Theme ──
 
@@ -903,6 +1294,24 @@ class AppState extends ChangeNotifier {
       smsAlertEnabled: smsAlertEnabled,
       autoSmsOnConfirm: autoSmsOnConfirm,
     );
+    _syncMonitoringConfigToCloud();
+  }
+
+  void _syncMonitoringConfigToCloud() {
+    if (!_firebaseReady) return;
+
+    FirestoreService.saveMonitoringConfig(
+      monitoringRole: _monitoringRole.wireValue,
+      linkedParentDeviceId: _linkedParentDeviceId.isEmpty
+          ? null
+          : _linkedParentDeviceId,
+      linkedChildDeviceId: _linkedChildDeviceId.isEmpty
+          ? null
+          : _linkedChildDeviceId,
+      safeZoneLat: _safeZoneLat,
+      safeZoneLon: _safeZoneLon,
+      safeZoneRadius: _safeZoneRadiusMeters,
+    );
   }
 
   Future<bool> sendSmsAlert() async {
@@ -952,7 +1361,10 @@ class AppState extends ChangeNotifier {
   @override
   void dispose() {
     _alertCountdownTimer?.cancel();
+    _kidsPeriodicTimer?.cancel();
     _remoteKidsSub?.cancel();
+    _phoneLocationSub?.cancel();
+    TfliteFallDetectionService.instance.dispose();
     BleService.dispose();
     super.dispose();
   }

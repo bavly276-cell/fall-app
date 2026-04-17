@@ -52,6 +52,14 @@ class AppConstants {
   static const String prefProfilePhoto = 'profile_photo_base64';
   static const String prefOnboardingComplete = 'onboarding_complete';
   static const String prefFallHistory = 'fall_history';
+  static const String prefDeviceId = 'app_device_id';
+  static const String prefKidsModeEnabled = 'kids_mode_enabled';
+  static const String prefMonitoringRole = 'monitoring_role';
+  static const String prefLinkedParentDeviceId = 'linked_parent_device_id';
+  static const String prefLinkedChildDeviceId = 'linked_child_device_id';
+  static const String prefSafeZoneLat = 'safe_zone_lat';
+  static const String prefSafeZoneLon = 'safe_zone_lon';
+  static const String prefSafeZoneRadiusMeters = 'safe_zone_radius_meters';
 
   // Last known BLE device
   static const String prefLastBleDeviceId = 'last_ble_device_id';

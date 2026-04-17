@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -8,11 +9,13 @@ import 'firebase_options.dart';
 import 'screens/startup_clock_screen.dart';
 import 'services/app_state.dart';
 import 'services/background_service.dart';
+import 'services/fcm_service.dart';
 import 'utils/theme.dart';
 import 'widgets/app_lifecycle_service_bridge.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
 
   final appState = AppState();
 
@@ -33,6 +36,8 @@ Future<void> _bootstrapServices(AppState appState) async {
     await Firebase.initializeApp(
       options: DefaultFirebaseOptions.currentPlatform,
     ).timeout(const Duration(seconds: 8));
+
+    await FcmService.initialize().timeout(const Duration(seconds: 8));
   } catch (e) {
     debugPrint('Firebase init failed: $e');
   }

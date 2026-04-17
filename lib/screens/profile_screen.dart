@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
 import '../services/app_state.dart';
@@ -7,6 +8,7 @@ import '../services/ble_service.dart';
 import '../services/permission_manager.dart';
 import '../services/background_service.dart';
 import '../services/firestore_service.dart';
+import '../services/location_service.dart';
 import '../widgets/app_bottom_nav.dart';
 
 class ProfileScreen extends StatefulWidget {
@@ -140,6 +142,160 @@ class _ProfileScreenState extends State<ProfileScreen> {
               (val) => state.caregiverEmail = val,
             ),
           ]),
+          const SizedBox(height: 12),
+
+          // Kids Safety Monitoring Role + Pairing
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Kids Safety Monitoring',
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                  ),
+                  const Divider(),
+                  _infoRow(Icons.badge, 'This Device ID', state.deviceId),
+                  const SizedBox(height: 8),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: OutlinedButton.icon(
+                      onPressed: () async {
+                        await Clipboard.setData(
+                          ClipboardData(text: state.deviceId),
+                        );
+                        if (context.mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('Device ID copied')),
+                          );
+                        }
+                      },
+                      icon: const Icon(Icons.copy_rounded),
+                      label: const Text('Copy Device ID'),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  DropdownButtonFormField<MonitoringRole>(
+                    value: state.monitoringRole,
+                    items: const [
+                      DropdownMenuItem(
+                        value: MonitoringRole.child,
+                        child: Text('Child Device (send updates)'),
+                      ),
+                      DropdownMenuItem(
+                        value: MonitoringRole.parent,
+                        child: Text('Parent Device (monitor child)'),
+                      ),
+                    ],
+                    decoration: const InputDecoration(
+                      labelText: 'Role',
+                      prefixIcon: Icon(Icons.swap_horiz_rounded),
+                    ),
+                    onChanged: (value) {
+                      if (value != null) {
+                        state.setMonitoringRole(value);
+                      }
+                    },
+                  ),
+                  const SizedBox(height: 10),
+                  if (state.monitoringRole == MonitoringRole.child)
+                    _editableRow(
+                      context,
+                      Icons.phone_iphone_rounded,
+                      'Linked Parent Device ID',
+                      state.linkedParentDeviceId,
+                      (val) => state.setLinkedParentDeviceId(val),
+                    ),
+                  if (state.monitoringRole == MonitoringRole.parent)
+                    _editableRow(
+                      context,
+                      Icons.child_care_rounded,
+                      'Linked Child Device ID',
+                      state.linkedChildDeviceId,
+                      (val) => state.setLinkedChildDeviceId(val),
+                    ),
+                  if (state.monitoringRole == MonitoringRole.child)
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const SizedBox(height: 8),
+                        _infoRow(
+                          Icons.gps_fixed,
+                          'Safe Zone',
+                          (state.safeZoneLat != null &&
+                                  state.safeZoneLon != null)
+                              ? '${state.safeZoneLat!.toStringAsFixed(5)}, ${state.safeZoneLon!.toStringAsFixed(5)}'
+                              : 'Not set',
+                        ),
+                        _infoRow(
+                          Icons.radio_button_checked,
+                          'Safe Radius',
+                          '${state.safeZoneRadiusMeters.toStringAsFixed(0)} m',
+                        ),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: OutlinedButton.icon(
+                                onPressed: () async {
+                                  final pos =
+                                      await LocationService.getCurrentPosition();
+                                  if (pos == null) return;
+                                  await state.setSafeZone(
+                                    latitude: pos.latitude,
+                                    longitude: pos.longitude,
+                                    radiusMeters: state.safeZoneRadiusMeters,
+                                  );
+                                  if (context.mounted) {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      const SnackBar(
+                                        content: Text('Safe zone saved'),
+                                      ),
+                                    );
+                                  }
+                                },
+                                icon: const Icon(Icons.my_location_rounded),
+                                label: const Text('Set Current as Safe Zone'),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        Slider(
+                          value: state.safeZoneRadiusMeters.clamp(
+                            100.0,
+                            2000.0,
+                          ),
+                          min: 100,
+                          max: 2000,
+                          divisions: 19,
+                          label:
+                              '${state.safeZoneRadiusMeters.toStringAsFixed(0)} m',
+                          onChanged: (value) {
+                            final lat = state.safeZoneLat;
+                            final lon = state.safeZoneLon;
+                            if (lat == null || lon == null) return;
+                            state.setSafeZone(
+                              latitude: lat,
+                              longitude: lon,
+                              radiusMeters: value,
+                            );
+                          },
+                        ),
+                        Align(
+                          alignment: Alignment.centerLeft,
+                          child: TextButton.icon(
+                            onPressed: () => state.clearSafeZone(),
+                            icon: const Icon(Icons.delete_outline_rounded),
+                            label: const Text('Clear Safe Zone'),
+                          ),
+                        ),
+                      ],
+                    ),
+                ],
+              ),
+            ),
+          ),
           const SizedBox(height: 12),
 
           // Cloud Sync

@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/foundation.dart';
 import '../models/fall_event.dart';
+import '../models/safety_update.dart';
 
 /// Service for syncing fall events and user profile to Cloud Firestore.
 ///
@@ -12,7 +13,9 @@ import '../models/fall_event.dart';
 class FirestoreService {
   static FirebaseFirestore get _db {
     if (Firebase.apps.isEmpty) {
-      throw StateError('Firebase has not been initialized. Call Firebase.initializeApp() first.');
+      throw StateError(
+        'Firebase has not been initialized. Call Firebase.initializeApp() first.',
+      );
     }
     return FirebaseFirestore.instance;
   }
@@ -52,6 +55,12 @@ class FirestoreService {
 
   static CollectionReference get _kidsLocationsCol =>
       _userDoc.collection('kids_locations'); // NEW kids mode GPS
+
+  static CollectionReference get _safetyUpdatesCol =>
+      _userDoc.collection('safety_updates');
+
+  static CollectionReference get _safetyAlertsCol =>
+      _userDoc.collection('safety_alerts');
 
   // ── Fall Events ──
 
@@ -162,6 +171,44 @@ class FirestoreService {
     }
   }
 
+  /// Save FCM token for this device/user.
+  static Future<void> saveMessagingToken(String token) async {
+    try {
+      await _userDoc.set({
+        'fcmToken': token,
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+    } catch (e) {
+      _logFirestoreError('saveMessagingToken', e);
+    }
+  }
+
+  /// Save role + child/parent pairing configuration.
+  static Future<void> saveMonitoringConfig({
+    required String monitoringRole,
+    String? linkedParentDeviceId,
+    String? linkedChildDeviceId,
+    double? safeZoneLat,
+    double? safeZoneLon,
+    double? safeZoneRadius,
+  }) async {
+    try {
+      await _userDoc.set({
+        'monitoringRole': monitoringRole,
+        'linkedParentDeviceId': linkedParentDeviceId,
+        'linkedChildDeviceId': linkedChildDeviceId,
+        'safeZone': {
+          'lat': safeZoneLat,
+          'lon': safeZoneLon,
+          'radius': safeZoneRadius,
+        },
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+    } catch (e) {
+      _logFirestoreError('saveMonitoringConfig', e);
+    }
+  }
+
   /// Load user profile from Firestore.
   static Future<Map<String, dynamic>?> loadProfile() async {
     try {
@@ -201,6 +248,81 @@ class FirestoreService {
     } catch (e) {
       _logFirestoreError('updateSensorSnapshot', e);
     }
+  }
+
+  /// Save the latest merged kids safety snapshot on the user document.
+  static Future<void> saveSafetySnapshot({required SafetyUpdate update}) async {
+    try {
+      await _userDoc.set({
+        'lastSafetySnapshot': update.toMap(useServerTimestamp: true),
+        'alertStatus': {
+          'level': update.alertLevel,
+          'reason': update.alertReason,
+        },
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+    } catch (e) {
+      _logFirestoreError('saveSafetySnapshot', e);
+    }
+  }
+
+  /// Store historical safety updates for timeline/analytics.
+  static Future<void> saveSafetyUpdate({required SafetyUpdate update}) async {
+    try {
+      await _safetyUpdatesCol.add(update.toMap(useServerTimestamp: true));
+    } catch (e) {
+      _logFirestoreError('saveSafetyUpdate', e);
+    }
+  }
+
+  /// Queue an urgent push request. A Cloud Function picks this document
+  /// and sends an FCM message to the linked parent phone.
+  static Future<void> queueParentPushAlert({
+    required String parentDeviceId,
+    required SafetyUpdate update,
+  }) async {
+    try {
+      await _safetyAlertsCol.add({
+        'parentDeviceId': parentDeviceId,
+        'childDeviceId': update.childDeviceId,
+        'mapsUrl': update.mapsUrl,
+        'latitude': update.latitude,
+        'longitude': update.longitude,
+        'heartRate': update.heartRate,
+        'spo2': update.spo2,
+        'fallDetected': update.fallDetected,
+        'alertLevel': update.alertLevel,
+        'alertReason': update.alertReason,
+        'activity': update.activity,
+        'triggerType': update.triggerType,
+        'createdAt': FieldValue.serverTimestamp(),
+      });
+    } catch (e) {
+      _logFirestoreError('queueParentPushAlert', e);
+    }
+  }
+
+  /// Stream latest child safety snapshot for parent monitoring UI.
+  static Stream<SafetyUpdate?> streamLatestSafetySnapshot(
+    String childDeviceId,
+  ) {
+    final id = childDeviceId.trim();
+    if (id.isEmpty) return Stream<SafetyUpdate?>.value(null);
+
+    return _db.collection('users').doc(id).snapshots().map((doc) {
+      if (!doc.exists) return null;
+      final data = doc.data();
+      if (data == null) return null;
+
+      final raw = data['lastSafetySnapshot'];
+      if (raw is Map<String, dynamic>) {
+        return SafetyUpdate.fromMap(raw);
+      }
+      if (raw is Map) {
+        return SafetyUpdate.fromMap(Map<String, dynamic>.from(raw));
+      }
+      return null;
+    });
   }
 
   /// Save a chat message (user or assistant) under the current user.

@@ -3,10 +3,10 @@ import 'package:provider/provider.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:intl/intl.dart';
 import '../services/app_state.dart';
-import '../services/ble_service.dart';
+import '../services/location_service.dart';
 
 /// Kids Mode Live GPS Tracking Screen
-/// Displays real-time location of the bracelet wearer on a map
+/// Displays real-time location from the child phone GPS on a map
 /// and shows location history with timestamps
 class KidsTrackingScreen extends StatefulWidget {
   const KidsTrackingScreen({super.key});
@@ -17,8 +17,6 @@ class KidsTrackingScreen extends StatefulWidget {
 
 class _KidsTrackingScreenState extends State<KidsTrackingScreen> {
   GoogleMapController? _mapController;
-  final Set<Marker> _markers = {};
-  final Set<Polyline> _polylines = {};
 
   ({double lat, double lon})? _resolveCoordinates(AppState appState) {
     if (appState.lastKidsLat != null && appState.lastKidsLon != null) {
@@ -34,65 +32,18 @@ class _KidsTrackingScreenState extends State<KidsTrackingScreen> {
   @override
   void initState() {
     super.initState();
-    _ensureGpsFeed();
-    _updateMapMarkers();
+    _ensurePhoneGpsFeed();
   }
 
-  void _ensureGpsFeed() {
+  void _ensurePhoneGpsFeed() {
     final appState = context.read<AppState>();
     if (!appState.kidsModeEnabled) return;
 
-    if (BleService.isConnected) {
-      BleService.subscribeGpsData(
-        onGpsData: (lat, lon, valid) {
-          if (!mounted) return;
-          appState.updateKidsGpsLocation(lat, lon, valid);
-          _updateMapMarkers();
-        },
-      );
-    }
-  }
-
-  void _updateMapMarkers() {
-    _markers.clear();
-    _polylines.clear();
-
-    final appState = context.read<AppState>();
-    final coords = _resolveCoordinates(appState);
-
-    // Add current location marker
-    if (coords != null) {
-      _markers.add(
-        Marker(
-          markerId: const MarkerId('current_location'),
-          position: LatLng(coords.lat, coords.lon),
-          infoWindow: const InfoWindow(title: 'Current Location'),
-          icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueBlue),
-        ),
-      );
-    }
-
-    // Add location history polyline
-    if (appState.kidsLocationHistory.isNotEmpty) {
-      final points = appState.kidsLocationHistory
-          .map((loc) => LatLng(loc.lat, loc.lon))
-          .toList();
-
-      _polylines.add(
-        Polyline(
-          polylineId: const PolylineId('location_history'),
-          color: Colors.blue.withAlpha(128),
-          points: points,
-          width: 3,
-        ),
-      );
-
-      // Only the current location marker is needed as per user preference.
-    }
-
-    if (mounted) {
-      setState(() {});
-    }
+    // Best effort refresh for first fix.
+    LocationService.getCurrentPosition().then((pos) {
+      if (!mounted || pos == null) return;
+      appState.updateKidsGpsLocation(pos.latitude, pos.longitude, true);
+    });
   }
 
   Future<void> _onMapCreated(GoogleMapController controller) async {
@@ -111,24 +62,17 @@ class _KidsTrackingScreenState extends State<KidsTrackingScreen> {
   }
 
   Widget _buildWaitingGpsState(AppState appState) {
-    final isBle = BleService.isConnected;
-    final firmwareMissingGps =
-        isBle &&
-        appState.smartwatchCapabilityReport != null &&
-        !appState.smartwatchCapabilityReport!.hasGps;
-
     String message;
-    if (firmwareMissingGps) {
+    if (appState.monitoringRole == MonitoringRole.parent) {
       message =
-          'Connected device firmware does not expose GPS over BLE.\n'
-          'Flash a GPS-enabled firmware build and reconnect.';
-    } else if (isBle) {
-      message = 'Waiting for ESP GPS signal...';
+          'Waiting for child GPS updates from cloud.\n'
+          'Make sure child phone has Kids Mode enabled.';
     } else if (appState.firebaseReady) {
       message =
-          'No ESP GPS points synced yet. Reconnect bracelet and try again.';
+          'Waiting for phone GPS signal...\n'
+          'Check location permission and GPS settings.';
     } else {
-      message = 'Connecting ESP GPS sync...';
+      message = 'Preparing location tracking...';
     }
 
     return Center(
@@ -147,11 +91,10 @@ class _KidsTrackingScreenState extends State<KidsTrackingScreen> {
             const SizedBox(height: 14),
             ElevatedButton.icon(
               onPressed: () {
-                _ensureGpsFeed();
-                _updateMapMarkers();
+                _ensurePhoneGpsFeed();
               },
               icon: const Icon(Icons.refresh),
-              label: const Text('Retry GPS'),
+              label: const Text('Retry Location'),
             ),
           ],
         ),
@@ -159,11 +102,11 @@ class _KidsTrackingScreenState extends State<KidsTrackingScreen> {
     );
   }
 
-  String _getGpsStatusText(AppState appState, bool isBle) {
+  String _getGpsStatusText(AppState appState) {
     if (!appState.kidsModeGpsValid) {
-      return isBle
-          ? 'ESP BLE: Waiting for signal...'
-          : 'ESP Sync: No data found';
+      return appState.monitoringRole == MonitoringRole.parent
+          ? 'Cloud: Waiting for child updates...'
+          : 'Phone GPS: Waiting for signal...';
     }
 
     if (appState.lastKidsGpsUpdate == null) {
@@ -184,7 +127,10 @@ class _KidsTrackingScreenState extends State<KidsTrackingScreen> {
       timeAgo = DateFormat('MMM d').format(appState.lastKidsGpsUpdate!);
     }
 
-    return '${isBle ? 'ESP BLE' : 'ESP Sync'}: ${diff.inSeconds < 10 ? 'Live' : 'Last updated $timeAgo'}';
+    final source = appState.monitoringRole == MonitoringRole.parent
+        ? 'Cloud'
+        : 'Phone GPS';
+    return '$source: ${diff.inSeconds < 10 ? 'Live' : 'Last updated $timeAgo'}';
   }
 
   @override
@@ -193,7 +139,8 @@ class _KidsTrackingScreenState extends State<KidsTrackingScreen> {
       appBar: AppBar(title: const Text('Kids Tracking'), elevation: 0),
       body: Consumer<AppState>(
         builder: (context, appState, _) {
-          if (!appState.kidsModeEnabled) {
+          if (!appState.kidsModeEnabled &&
+              appState.monitoringRole == MonitoringRole.child) {
             return Center(
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
@@ -222,8 +169,32 @@ class _KidsTrackingScreenState extends State<KidsTrackingScreen> {
             return _buildWaitingGpsState(appState);
           }
 
-          final isBle = BleService.isConnected;
-          final statusText = _getGpsStatusText(appState, isBle);
+          final markers = <Marker>{
+            Marker(
+              markerId: const MarkerId('current_location'),
+              position: LatLng(coords.lat, coords.lon),
+              infoWindow: const InfoWindow(title: 'Current Location'),
+              icon: BitmapDescriptor.defaultMarkerWithHue(
+                BitmapDescriptor.hueBlue,
+              ),
+            ),
+          };
+
+          final polylines = <Polyline>{};
+          if (appState.kidsLocationHistory.isNotEmpty) {
+            polylines.add(
+              Polyline(
+                polylineId: const PolylineId('location_history'),
+                color: Colors.blue.withAlpha(128),
+                points: appState.kidsLocationHistory
+                    .map((loc) => LatLng(loc.lat, loc.lon))
+                    .toList(),
+                width: 3,
+              ),
+            );
+          }
+
+          final statusText = _getGpsStatusText(appState);
 
           return Column(
             children: [
@@ -253,7 +224,9 @@ class _KidsTrackingScreenState extends State<KidsTrackingScreen> {
                     Row(
                       children: [
                         Icon(
-                          isBle ? Icons.bluetooth : Icons.cloud_done_rounded,
+                          appState.monitoringRole == MonitoringRole.parent
+                              ? Icons.cloud_done_rounded
+                              : Icons.my_location_rounded,
                           color: appState.kidsModeGpsValid
                               ? Colors.green
                               : Colors.orange,
@@ -272,7 +245,7 @@ class _KidsTrackingScreenState extends State<KidsTrackingScreen> {
                             ),
                           ),
                         ),
-                        if (!isBle)
+                        if (appState.monitoringRole == MonitoringRole.parent)
                           Container(
                             padding: const EdgeInsets.symmetric(
                               horizontal: 8,
@@ -283,7 +256,7 @@ class _KidsTrackingScreenState extends State<KidsTrackingScreen> {
                               borderRadius: BorderRadius.circular(8),
                             ),
                             child: const Text(
-                              'ESP SYNC',
+                              'CLOUD',
                               style: TextStyle(
                                 fontSize: 10,
                                 fontWeight: FontWeight.bold,
@@ -324,8 +297,8 @@ class _KidsTrackingScreenState extends State<KidsTrackingScreen> {
                         target: LatLng(coords.lat, coords.lon),
                         zoom: 16,
                       ),
-                      markers: _markers,
-                      polylines: _polylines,
+                      markers: markers,
+                      polylines: polylines,
                       // ESP-only mode: don't show phone GPS location on map.
                       myLocationEnabled: false,
                       myLocationButtonEnabled: false,
@@ -337,8 +310,7 @@ class _KidsTrackingScreenState extends State<KidsTrackingScreen> {
                       child: FloatingActionButton(
                         mini: true,
                         onPressed: () {
-                          _ensureGpsFeed();
-                          _updateMapMarkers();
+                          _ensurePhoneGpsFeed();
                         },
                         child: const Icon(Icons.refresh),
                       ),

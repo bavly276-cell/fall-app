@@ -1,4 +1,5 @@
 /// Unified sensor data model that works across all platforms
+library;
 import 'dart:math';
 
 class UnifiedSensorData {

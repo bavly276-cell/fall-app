@@ -2,6 +2,21 @@
 
 Flutter caregiver app + ESP32-C3 wearable firmware for fall detection and emergency alerts.
 
+## Kids Safety Monitoring System
+
+This codebase now includes a full kids safety workflow:
+
+- Child phone internal GPS tracking (foreground + background)
+- BLE wearable health fusion (HR, SpO2, accel/fall)
+- 5-minute periodic parent updates + immediate danger alerts
+- FCM notification pipeline (via Firebase Cloud Function)
+- Parent live monitoring map screen
+- Local on-device TFLite fall inference
+
+Full setup and deployment steps are in:
+
+- `KIDS_SAFETY_SETUP.md`
+
 ## Hardware Supported
 
 - ESP32-C3 Super Mini Development Board

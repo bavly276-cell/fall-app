@@ -465,7 +465,7 @@ class _MedicalAnalyticsScreenState extends State<MedicalAnalyticsScreen>
                 ),
               ),
             );
-          }).toList(),
+          }),
         ],
       ),
     );
@@ -559,7 +559,7 @@ class _MedicalAnalyticsScreenState extends State<MedicalAnalyticsScreen>
                 ),
               ),
             );
-          }).toList(),
+          }),
         ],
       ),
     );
@@ -694,7 +694,7 @@ class _MedicalAnalyticsScreenState extends State<MedicalAnalyticsScreen>
                 ),
               ),
             );
-          }).toList(),
+          }),
         ],
       ),
     );

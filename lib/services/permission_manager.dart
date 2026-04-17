@@ -40,6 +40,8 @@ class PermissionManager {
           'bluetoothScan': true,
           'bluetoothConnect': true,
           'location': true,
+          'locationBackground': true,
+          'notifications': true,
           'sms': true,
           'phone': true,
         };
@@ -65,8 +67,24 @@ class PermissionManager {
         final locationStatus = await Permission.locationWhenInUse.request();
         results['location'] =
             locationStatus.isGranted || locationStatus.isLimited;
+
+        if (results['location'] == true) {
+          final bgStatus = await Permission.locationAlways.request();
+          results['locationBackground'] = bgStatus.isGranted;
+        } else {
+          results['locationBackground'] = false;
+        }
       } catch (_) {
         results['location'] = false;
+        results['locationBackground'] = false;
+      }
+
+      // Notifications (Android 13+)
+      try {
+        final notificationStatus = await Permission.notification.request();
+        results['notifications'] = notificationStatus.isGranted;
+      } catch (_) {
+        results['notifications'] = false;
       }
 
       // SMS
@@ -127,8 +145,22 @@ class PermissionManager {
   static Future<bool> requestLocationPermission() async {
     if (!_isAndroid) return true;
     return _runSerialized(() async {
-      final status = await Permission.locationWhenInUse.request();
-      return status.isGranted || status.isLimited;
+      final whenInUse = await Permission.locationWhenInUse.request();
+      final fgGranted = whenInUse.isGranted || whenInUse.isLimited;
+      if (!fgGranted) return false;
+
+      // Best-effort request for background location so kids tracking can
+      // continue when app is not in foreground.
+      await Permission.locationAlways.request();
+      return true;
+    });
+  }
+
+  static Future<bool> requestBackgroundLocationPermission() async {
+    if (!_isAndroid) return true;
+    return _runSerialized(() async {
+      final status = await Permission.locationAlways.request();
+      return status.isGranted;
     });
   }
 

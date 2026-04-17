@@ -4,8 +4,6 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../services/app_state.dart';
 import '../services/permission_manager.dart';
-import '../services/ble_service.dart';
-import '../services/firestore_service.dart';
 import '../widgets/alert_card.dart';
 import '../widgets/heart_rate_widget.dart';
 import '../widgets/device_status_widget.dart';
@@ -13,6 +11,7 @@ import '../widgets/app_bottom_nav.dart';
 import 'device_scan_screen.dart';
 import 'kids_tracking_screen.dart';
 import 'medical_analytics_screen.dart';
+import 'parent_monitoring_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -26,7 +25,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   late final List<Animation<double>> _fadeAnims;
   late final List<Animation<Offset>> _slideAnims;
 
-  static const int _itemCount = 9;
+  static const int _itemCount = 10;
 
   @override
   void initState() {
@@ -68,18 +67,6 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
         // Run after permission prompts to avoid overlapping permission requests.
         if (!mounted) return;
         await context.read<AppState>().tryAutoConnectToLastDevice();
-
-        // Setup GPS callback for kids mode (NEW)
-        if (!mounted) return;
-        final appState = context.read<AppState>();
-        BleService.setGpsDataCallback((lat, lon, valid) {
-          appState.updateKidsGpsLocation(lat, lon, valid);
-
-          // Auto-save to Firebase if kids mode enabled
-          if (valid && lat != null && lon != null && appState.kidsModeEnabled) {
-            FirestoreService.saveKidsLocation(latitude: lat, longitude: lon);
-          }
-        });
       }());
     });
   }
@@ -516,26 +503,6 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                                   onChanged: (val) {
                                     if (val) {
                                       appState.enableKidsMode();
-                                      // Request GPS subscription
-                                      if (BleService.isConnected) {
-                                        BleService.subscribeGpsData(
-                                          onGpsData: (lat, lon, valid) {
-                                            appState.updateKidsGpsLocation(
-                                              lat,
-                                              lon,
-                                              valid,
-                                            );
-                                            if (valid &&
-                                                lat != null &&
-                                                lon != null) {
-                                              FirestoreService.saveKidsLocation(
-                                                latitude: lat,
-                                                longitude: lon,
-                                              );
-                                            }
-                                          },
-                                        );
-                                      }
                                     } else {
                                       appState.disableKidsMode();
                                     }
@@ -552,9 +519,105 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
               ),
             ),
 
-            // Medical Analytics Card (NEW)
+            // Parent Monitoring Card
             _animatedItem(
               6,
+              Padding(
+                padding: const EdgeInsets.only(bottom: 16),
+                child: Consumer<AppState>(
+                  builder: (context, appState, _) {
+                    final isParent =
+                        appState.monitoringRole == MonitoringRole.parent;
+                    return Material(
+                      color: Colors.transparent,
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(16),
+                        onTap: () => Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => const ParentMonitoringScreen(),
+                          ),
+                        ),
+                        child: Card(
+                          elevation: 1,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(16),
+                          ),
+                          child: Container(
+                            padding: const EdgeInsets.all(16),
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(16),
+                              gradient: LinearGradient(
+                                colors: [
+                                  Colors.indigo.withOpacity(0.1),
+                                  Colors.lightBlue.withOpacity(0.05),
+                                ],
+                                begin: Alignment.topLeft,
+                                end: Alignment.bottomRight,
+                              ),
+                            ),
+                            child: Row(
+                              children: [
+                                Container(
+                                  padding: const EdgeInsets.all(12),
+                                  decoration: BoxDecoration(
+                                    color: Colors.indigo.withAlpha(40),
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                  child: const Icon(
+                                    Icons.family_restroom,
+                                    color: Colors.indigo,
+                                    size: 28,
+                                  ),
+                                ),
+                                const SizedBox(width: 16),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        'Parent Monitoring',
+                                        style: TextStyle(
+                                          fontSize: 16,
+                                          fontWeight: FontWeight.bold,
+                                          color: theme.colorScheme.onSurface,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 4),
+                                      Text(
+                                        isParent
+                                            ? 'Live child location and health status'
+                                            : 'Open to preview parent dashboard',
+                                        style: TextStyle(
+                                          fontSize: 12,
+                                          color: theme
+                                              .colorScheme
+                                              .onSurfaceVariant,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                Icon(
+                                  Icons.arrow_forward_ios_rounded,
+                                  size: 18,
+                                  color: theme.colorScheme.onSurfaceVariant,
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ),
+
+            // Medical Analytics Card
+            _animatedItem(
+              7,
               Padding(
                 padding: const EdgeInsets.only(bottom: 16),
                 child: Material(
@@ -639,7 +702,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
 
             // Stats row
             _animatedItem(
-              7,
+              8,
               Padding(
                 padding: const EdgeInsets.only(bottom: 20),
                 child: Row(
@@ -670,7 +733,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
 
             // Simulate button
             _animatedItem(
-              8,
+              9,
               SizedBox(
                 width: double.infinity,
                 child: ElevatedButton.icon(

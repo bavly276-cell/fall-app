@@ -1,13 +1,20 @@
 import 'dart:async';
 import 'dart:ui';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../firebase_options.dart';
 import '../utils/constants.dart';
 import 'ble_service.dart';
 import 'fall_detection_algorithm.dart';
+import 'firestore_service.dart';
+import 'health_rules_service.dart';
+import 'kids_safety_sync_service.dart';
+import 'location_service.dart';
 import 'sms_service.dart';
+import 'device_identity_service.dart';
 
 /// Background service that keeps the BLE connection & fall monitoring active
 /// even when the app is minimized. Uses a persistent Android foreground
@@ -29,12 +36,16 @@ class BackgroundMonitorService {
       androidConfiguration: AndroidConfiguration(
         onStart: _onStart,
         isForegroundMode: true,
-        autoStart: false,
-        autoStartOnBoot: false,
+        autoStart: true,
+        autoStartOnBoot: true,
         foregroundServiceNotificationId: 226,
         initialNotificationTitle: 'Fall Detection Active',
         initialNotificationContent: 'Monitoring for falls in background',
-        foregroundServiceTypes: [AndroidForegroundType.connectedDevice],
+        foregroundServiceTypes: [
+          AndroidForegroundType.connectedDevice,
+          AndroidForegroundType.location,
+          AndroidForegroundType.dataSync,
+        ],
       ),
     );
   }
@@ -90,14 +101,125 @@ void _onStart(ServiceInstance service) async {
   if (service is AndroidServiceInstance) {
     final prefs = await SharedPreferences.getInstance();
 
+    if (Firebase.apps.isEmpty) {
+      try {
+        await Firebase.initializeApp(
+          options: DefaultFirebaseOptions.currentPlatform,
+        );
+      } catch (e) {
+        debugPrint('BackgroundService Firebase init failed: $e');
+      }
+    }
+
+    String appDeviceId = prefs.getString(AppConstants.prefDeviceId) ?? '';
+    if (appDeviceId.trim().isEmpty) {
+      try {
+        appDeviceId = await DeviceIdentityService.getOrCreateDeviceId();
+        await prefs.setString(AppConstants.prefDeviceId, appDeviceId);
+      } catch (_) {}
+    }
+
+    if (appDeviceId.trim().isNotEmpty) {
+      FirestoreService.setDeviceId(appDeviceId);
+    }
+
     DateTime? lastSmsSentAt;
     final lastSmsAtMs = prefs.getInt('bg_last_sms_at_ms');
     if (lastSmsAtMs != null && lastSmsAtMs > 0) {
       lastSmsSentAt = DateTime.fromMillisecondsSinceEpoch(lastSmsAtMs);
     }
 
+    Future<void> pushKidsSafetyUpdate({
+      required String triggerType,
+      required bool immediate,
+      required bool fallDetected,
+      double? gyroMag,
+    }) async {
+      final kidsModeEnabled =
+          prefs.getBool(AppConstants.prefKidsModeEnabled) ?? false;
+      final role = prefs.getString(AppConstants.prefMonitoringRole) ?? 'child';
+      final parentId =
+          (prefs.getString(AppConstants.prefLinkedParentDeviceId) ?? '').trim();
+
+      if (!kidsModeEnabled || role != 'child') return;
+      if (parentId.isEmpty || appDeviceId.trim().isEmpty) return;
+
+      final hr = prefs.getDouble(AppConstants.prefLastSensorHr) ?? 0.0;
+      final spo2 = prefs.getDouble(AppConstants.prefLastSensorSpo2) ?? 0.0;
+      final acc = prefs.getDouble(AppConstants.prefLastSensorAcc) ?? 1.0;
+
+      final abnormalHealth = HealthRulesService.isAbnormalVitals(
+        heartRate: hr,
+        spo2: spo2,
+      );
+
+      final isPeriodic = triggerType.startsWith('periodic');
+      if (!immediate && !isPeriodic && !fallDetected && !abnormalHealth) {
+        return;
+      }
+
+      final now = DateTime.now();
+      if (immediate) {
+        final lastImmediateMs = prefs.getInt('bg_last_kids_immediate_ms');
+        if (lastImmediateMs != null && lastImmediateMs > 0) {
+          final lastImmediate = DateTime.fromMillisecondsSinceEpoch(
+            lastImmediateMs,
+          );
+          if (now.difference(lastImmediate) < const Duration(seconds: 45)) {
+            return;
+          }
+        }
+      }
+
+      final position = await LocationService.getCurrentPosition();
+      final safeLat = prefs.getDouble(AppConstants.prefSafeZoneLat);
+      final safeLon = prefs.getDouble(AppConstants.prefSafeZoneLon);
+      final safeRadius =
+          prefs.getDouble(AppConstants.prefSafeZoneRadiusMeters) ?? 250.0;
+
+      final geofenceBreached = KidsSafetySyncService.isGeofenceBreached(
+        position: position,
+        safeLat: safeLat,
+        safeLon: safeLon,
+        safeRadiusMeters: safeRadius,
+      );
+
+      final update = KidsSafetySyncService.buildUpdate(
+        childDeviceId: appDeviceId,
+        triggerType: triggerType,
+        heartRate: hr,
+        spo2: spo2,
+        accelMag: acc,
+        gyroMag: gyroMag,
+        fallDetected: fallDetected,
+        geofenceBreached: geofenceBreached,
+        position: position,
+      );
+
+      await KidsSafetySyncService.pushUpdate(
+        update: update,
+        parentDeviceId: parentId,
+        immediate: immediate || geofenceBreached,
+      );
+
+      if (position != null) {
+        await FirestoreService.saveKidsLocation(
+          latitude: position.latitude,
+          longitude: position.longitude,
+        );
+      }
+
+      if (immediate || geofenceBreached) {
+        await prefs.setInt(
+          'bg_last_kids_immediate_ms',
+          now.millisecondsSinceEpoch,
+        );
+      }
+    }
+
     Timer? bleTick;
     Timer? notifTick;
+    Timer? kidsSyncTick;
     bool subscriptionsReady = false;
 
     Future<void> ensureBleConnected() async {
@@ -179,6 +301,23 @@ void _onStart(ServiceInstance service) async {
                 tiltAngle: data.tiltAngle,
               );
             }
+
+            final abnormalHealth = HealthRulesService.isAbnormalVitals(
+              heartRate: data.heartRate.toDouble(),
+              spo2: data.spo2,
+            );
+            if (data.fallFlag || abnormalHealth) {
+              unawaited(
+                pushKidsSafetyUpdate(
+                  triggerType: data.fallFlag
+                      ? 'immediate_fall_background'
+                      : 'immediate_health_background',
+                  immediate: true,
+                  fallDetected: data.fallFlag,
+                  gyroMag: data.gyroMag,
+                ),
+              );
+            }
           },
         );
 
@@ -202,6 +341,14 @@ void _onStart(ServiceInstance service) async {
               heartRate: hr,
               tiltAngle: tilt,
             );
+
+            unawaited(
+              pushKidsSafetyUpdate(
+                triggerType: 'immediate_fall_packet_background',
+                immediate: true,
+                fallDetected: true,
+              ),
+            );
           },
         );
       }
@@ -210,6 +357,7 @@ void _onStart(ServiceInstance service) async {
     service.on('stop').listen((_) {
       bleTick?.cancel();
       notifTick?.cancel();
+      kidsSyncTick?.cancel();
       BleService.disconnect();
       service.stopSelf();
     });
@@ -251,6 +399,28 @@ void _onStart(ServiceInstance service) async {
           content: '$status · $hrStr · $battStr',
         );
       } catch (_) {}
+    });
+
+    kidsSyncTick = Timer.periodic(const Duration(minutes: 1), (_) async {
+      final now = DateTime.now();
+      final lastSyncMs = prefs.getInt('bg_last_kids_sync_ms');
+      if (lastSyncMs != null && lastSyncMs > 0) {
+        final lastSync = DateTime.fromMillisecondsSinceEpoch(lastSyncMs);
+        if (now.difference(lastSync) < KidsSafetySyncService.periodicInterval) {
+          return;
+        }
+      }
+
+      try {
+        await pushKidsSafetyUpdate(
+          triggerType: 'periodic_background',
+          immediate: false,
+          fallDetected: false,
+        );
+        await prefs.setInt('bg_last_kids_sync_ms', now.millisecondsSinceEpoch);
+      } catch (e) {
+        debugPrint('BackgroundService periodic kids sync failed: $e');
+      }
     });
 
     // Kick off immediately (but never crash the isolate on errors).
